@@ -3446,11 +3446,36 @@ def procesar_json(origen, silencioso=True):
         # --------------------------------------------------------
         # 1. SIN TRABAJO DE BOMBA
         # --------------------------------------------------------
+        # --------------------------------------------------------
+        # 1. SIN TRABAJO DE BOMBA
+        # --------------------------------------------------------
 
-        sin_trabajo = bool(
+        compacidad_carta = pd.to_numeric(
+            resultado.get(
+                "Compacidad_Carta",
+                np.nan,
+            ),
+            errors="coerce",
+        )
+
+        # Condición que ya existía.
+        sin_trabajo_anterior = bool(
             resultado[
                 "Posible_Sin_Trabajo_Bomba"
             ]
+        )
+
+        # Nueva condición basada en el área encerrada
+        # por la carta real.
+        sin_trabajo_por_area = bool(
+            np.isfinite(compacidad_carta)
+            and compacidad_carta < 0.20
+        )
+
+        # Se activa si se cumple cualquiera de las dos.
+        sin_trabajo = bool(
+            sin_trabajo_anterior
+            or sin_trabajo_por_area
         )
 
         if sin_trabajo:
@@ -3458,18 +3483,36 @@ def procesar_json(origen, silencioso=True):
                 "Posible sin trabajo de bomba"
             )
 
-            evidencias.append(
-                "No se identificaron horizontales confiables"
-            )
+            if (
+                sin_trabajo_anterior
+                and sin_trabajo_por_area
+            ):
+                evidencias.append(
+                    "Horizontales no confiables y "
+                    "área real insuficiente"
+                )
+
+            elif sin_trabajo_por_area:
+                evidencias.append(
+                    "Área encerrada por la carta real "
+                    "menor al 20 % de su envolvente"
+                )
+
+            else:
+                evidencias.append(
+                    "No se identificaron horizontales confiables"
+                )
+        
 
         # Las siguientes reglas necesitan carta ideal válida.
-        horizontales_ok = (
+        horizontales_ok = bool(
             resultado[
                 "Estado_Horizontales"
             ]
             == "HORIZONTALES_OK"
+            and not sin_trabajo
         )
-
+        
         # Recuperar vacíos.
         vacio_si = metrica.get(
             "Area_Faltante_Superior_Izquierdo_pct",
@@ -3617,8 +3660,11 @@ def procesar_json(origen, silencioso=True):
         )
 
         hay_indicio_admision = bool(
-            vacio_derecho_marcado
-            or vacio_derecho_suave
+            horizontales_ok
+            and (
+                vacio_derecho_marcado
+                or vacio_derecho_suave
+            )
         )
 
         # --------------------------------------------------------
@@ -3949,51 +3995,105 @@ def procesar_json(origen, silencioso=True):
         # El exceso de torque y el exceso de carga estructural
         # permanecen como alertas operativas. No reemplazan el
         # diagnóstico dinamométrico principal de la carta.
-        if subexplotado:
-            diagnostico_principal = "Posible pozo subexplotado"
-            accion = "Evaluar aumento de régimen y revisar alertas secundarias"
-            confianza = 0.72
-        elif sin_trabajo:
-            diagnostico_principal = "Posible sin trabajo de bomba"
-            accion = "Revisar bomba, sarta y carta de superficie"
+        if sin_trabajo:
+            diagnostico_principal = (
+                "Posible sin trabajo de bomba"
+            )
+
+            accion = (
+                "Revisar bomba, sarta y "
+                "representatividad de la carta"
+            )
+
             confianza = 0.90
+
+        elif subexplotado:
+            diagnostico_principal = (
+                "Posible pozo subexplotado"
+            )
+
+            accion = (
+                "Evaluar aumento de régimen y "
+                "revisar alertas secundarias"
+            )
+
+            confianza = 0.72
+
         elif golpe_fluido:
-            diagnostico_principal = "Posible golpe de fluido"
-            accion = "Evaluar disminución de régimen"
+            diagnostico_principal = (
+                "Posible golpe de fluido"
+            )
+
+            accion = (
+                "Evaluar disminución de régimen"
+            )
+
             confianza = 0.78
+
         elif compresion_gas:
             if compresion_gas_suave:
                 diagnostico_principal = (
-                    "Posible compresión/interferencia de gas suave"
+                    "Posible compresión/interferencia "
+                    "de gas suave"
                 )
 
                 confianza = 0.68
 
             else:
                 diagnostico_principal = (
-                    "Posible compresión/interferencia de gas"
+                    "Posible compresión/interferencia "
+                    "de gas"
                 )
 
                 confianza = 0.74
 
             accion = (
-                "Evaluar condición de admisión y revisar régimen"
+                "Evaluar condición de admisión "
+                "y revisar régimen"
             )
+
         elif perdida_valvula:
-            diagnostico_principal = "Posible pérdida en válvula viajera"
-            accion = "Revisar válvula viajera"
+            diagnostico_principal = (
+                "Posible pérdida en válvula viajera"
+            )
+
+            accion = (
+                "Revisar válvula viajera"
+            )
+
             confianza = 0.76
+
         elif golpe_bomba:
-            diagnostico_principal = "Posible golpe de bomba"
-            accion = "Revisar espaciamiento"
+            diagnostico_principal = (
+                "Posible golpe de bomba"
+            )
+
+            accion = (
+                "Revisar espaciamiento"
+            )
+
             confianza = 0.82
+
         elif tubing_libre:
-            diagnostico_principal = "Posible tubing libre"
-            accion = "Revisar condición y anclaje del tubing"
+            diagnostico_principal = (
+                "Posible tubing libre"
+            )
+
+            accion = (
+                "Revisar condición y anclaje del tubing"
+            )
+
             confianza = 0.68
+
         else:
-            diagnostico_principal = "Sin diagnóstico automático"
-            accion = "Revisión visual"
+            diagnostico_principal = (
+                "Sin diagnóstico automático"
+            )
+
+            accion = (
+                "Revisión visual"
+            )
+
             confianza = 0.30
 
         filas_diagnosticos.append({
@@ -4020,6 +4120,10 @@ def procesar_json(origen, silencioso=True):
                 carga_estructural_pct,
             "Sin_Trabajo_Bomba":
                 sin_trabajo,
+            "Sin_Trabajo_Por_Area":
+                sin_trabajo_por_area,
+            "Compacidad_Carta":
+                compacidad_carta,
             "Perdida_Valvula_Viajera":
                 perdida_valvula,
             "Golpe_Fluido":
