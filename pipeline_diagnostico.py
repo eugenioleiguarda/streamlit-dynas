@@ -3720,11 +3720,11 @@ def procesar_json(origen, silencioso=True):
             and not sin_trabajo
             and not golpe_fluido
             and not compresion_gas
-            and datos_operativos_validos
             and np.isfinite(llenado_operativo)
             and np.isfinite(sumergencia_relativa)
             and llenado_operativo >= 85.0
             and sumergencia_relativa >= 10.0
+            and sumergencia_relativa <= 100.0
         )
 
         if subexplotado:
