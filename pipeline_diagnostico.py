@@ -3469,7 +3469,7 @@ def procesar_json(origen, silencioso=True):
         # por la carta real.
         sin_trabajo_por_area = bool(
             np.isfinite(compacidad_carta)
-            and compacidad_carta < 0.20
+            and compacidad_carta < 0.23
         )
 
         # Se activa si se cumple cualquiera de las dos.
@@ -3495,7 +3495,7 @@ def procesar_json(origen, silencioso=True):
             elif sin_trabajo_por_area:
                 evidencias.append(
                     "Área encerrada por la carta real "
-                    "menor al 20 % de su envolvente"
+                    "menor al 23 % de su envolvente"
                 )
 
             else:
