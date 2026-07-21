@@ -3482,15 +3482,18 @@ def procesar_json(origen, silencioso=True):
             )
 
         # --------------------------------------------------------
-        # LLENADO AJUSTADO PARA VÁLVULA VIAJERA
+        # LLENADO OPERATIVO BASADO EN LA ZONA INFERIOR
         # --------------------------------------------------------
 
         # Cada cuadrante representa el 25 % del área ideal.
-        # Si hay pérdida de viajera, los vacíos superiores
-        # no se descuentan del llenado operativo.
+        # Los vacíos superiores no se consideran pérdida de
+        # llenado porque pueden deberse a transferencia de carga,
+        # válvulas u otros efectos. Se conservan como métricas
+        # diagnósticas independientes.
         if (
-            perdida_valvula
-            and np.isfinite(llenado)
+            np.isfinite(llenado)
+            and np.isfinite(vacio_si)
+            and np.isfinite(vacio_sd)
         ):
             llenado_operativo = (
                 llenado
@@ -3498,17 +3501,17 @@ def procesar_json(origen, silencioso=True):
                 + 0.25 * vacio_sd
             )
 
-            llenado_operativo = min(
-                llenado_operativo,
-                100.0,
+            llenado_operativo = float(
+                np.clip(
+                    llenado_operativo,
+                    0.0,
+                    100.0,
+                )
             )
 
         else:
             llenado_operativo = llenado
 
-        # --------------------------------------------------------
-        # 3. GOLPE DE FLUIDO / COMPRESIÓN DE GAS
-        # --------------------------------------------------------
         # --------------------------------------------------------
         # 3. GOLPE DE FLUIDO / COMPRESIÓN DE GAS
         # --------------------------------------------------------
