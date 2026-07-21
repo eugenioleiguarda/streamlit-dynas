@@ -1035,27 +1035,7 @@ def procesar_json(origen, silencioso=True):
         pendiente_sup = calidad_horizontal_tramo(asc, linea_asc, rango_y)
         pendiente_inf = calidad_horizontal_tramo(desc, linea_desc, rango_y)
 
-        # Extensión de cada tramo horizontal respecto del
-        # recorrido total de posición de la carta.
-        extension_sup = abs(
-            linea_asc["posicion_fin"]
-            - linea_asc["posicion_inicio"]
-        ) / rango_x
-
-        extension_inf = abs(
-            linea_desc["posicion_fin"]
-            - linea_desc["posicion_inicio"]
-        ) / rango_x
-
-        superior_sin_persistencia = bool(
-            not np.isfinite(extension_sup)
-            or extension_sup < 0.15
-        )
-
-        inferior_sin_persistencia = bool(
-            not np.isfinite(extension_inf)
-            or extension_inf < 0.15
-        )
+        
         evidencias = []
 
         if gap <= 0:
@@ -1121,30 +1101,11 @@ def procesar_json(origen, silencioso=True):
                 and pendiente_inf > 0.30
             )
         )
-        ambas_sin_persistencia = bool(
-            superior_sin_persistencia
-            and inferior_sin_persistencia
-        )
-
-        horizontal_extremadamente_corta = bool(
-            extension_sup < 0.08
-            or extension_inf < 0.08
-        )
-
-        if (
-            superior_sin_persistencia
-            or inferior_sin_persistencia
-        ):
-            evidencias.append(
-                "HORIZONTALES_SIN_PERSISTENCIA"
-            )
             
         confiables = not (
             gap <= 0
             or ambas_no_horizontales
             or tramo_extremadamente_inclinado
-            or ambas_sin_persistencia
-            or horizontal_extremadamente_corta
             or len(evidencias) >= 3
         )
 
@@ -1156,10 +1117,6 @@ def procesar_json(origen, silencioso=True):
             "ratio_gap_api": ratio_gap_api,
             "pendiente_relativa_superior": pendiente_sup,
             "pendiente_relativa_inferior": pendiente_inf,
-            "extension_horizontal_superior_pct":
-                float(100 * extension_sup),
-            "extension_horizontal_inferior_pct":
-                float(100 * extension_inf),
         }
 
 
