@@ -3601,6 +3601,31 @@ def procesar_json(origen, silencioso=True):
                 and not transferencia_abrupta
             )
 
+        # --------------------------------------------------------
+        # RESPALDO CUANDO LA TRANSFERENCIA NO PUDO MEDIRSE
+        # --------------------------------------------------------
+        transferencia_no_mensurable = bool(
+            not np.isfinite(ancho_transferencia_20_80)
+            and not np.isfinite(pendiente_transferencia)
+            and not np.isfinite(curvatura_transferencia)
+        )
+
+        # --------------------------------------------------------
+        # ASIGNACIÓN DEL DIAGNÓSTICO
+        # --------------------------------------------------------
+        if (
+            hay_indicio_admision
+            and transferencia_no_mensurable
+            and np.isfinite(vacio_sd)
+            and np.isfinite(vacio_id)
+            and np.isfinite(llenado)
+            and vacio_sd >= 8.0
+            and vacio_id >= 20.0
+            and llenado < 90.0
+        ):
+            transferencia_progresiva = True
+
+
         if hay_indicio_admision:
             if transferencia_abrupta:
                 golpe_fluido = True
