@@ -2778,7 +2778,12 @@ def procesar_json(origen, silencioso=True):
             "extension_horizontal_pct":
                 extension_horizontal,
             "ancho_20_80_pct": float(100 * candidato["ancho"]),
-            "inicio_transferencia_u_pct": float(100 * cruce_20["u"]),
+            "inicio_transferencia_u_pct": float(
+                100 * min(
+                    cruce_20["u"],
+                    cruce_80["u"],
+                )
+            ),
         }
 
 
