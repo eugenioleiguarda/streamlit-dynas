@@ -1036,20 +1036,78 @@ def procesar_json(origen, silencioso=True):
         pendiente_inf = calidad_horizontal_tramo(desc, linea_desc, rango_y)
 
         evidencias = []
-        if gap <= 0:
-            evidencias.append("HORIZONTALES_INVERTIDAS")
-        if np.isfinite(ratio_gap_api) and ratio_gap_api < 0.50:
-            evidencias.append("SEPARACION_MENOR_50PCT_PESO_API")
-        if compacidad < 0.20:
-            evidencias.append("CARTA_DIAGONAL_ANGOSTA")
-        if np.isfinite(llenado_api) and llenado_api <= 15:
-            evidencias.append("LLENADO_API_MUY_BAJO")
-        if ((np.isfinite(pendiente_sup) and pendiente_sup > 0.15)
-                or (np.isfinite(pendiente_inf) and pendiente_inf > 0.15)):
-            evidencias.append("TRAMOS_NO_HORIZONTALES")
 
-        # Inversión es suficiente. Sin inversión exigimos tres evidencias concurrentes.
-        confiables = not (gap <= 0 or len(evidencias) >= 3)
+        if gap <= 0:
+            evidencias.append(
+                "HORIZONTALES_INVERTIDAS"
+            )
+
+        if (
+            np.isfinite(ratio_gap_api)
+            and ratio_gap_api < 0.50
+        ):
+            evidencias.append(
+                "SEPARACION_MENOR_50PCT_PESO_API"
+            )
+
+        if compacidad < 0.20:
+            evidencias.append(
+                "CARTA_DIAGONAL_ANGOSTA"
+            )
+
+        if (
+            np.isfinite(llenado_api)
+            and llenado_api <= 15
+        ):
+            evidencias.append(
+                "LLENADO_API_MUY_BAJO"
+            )
+
+        superior_no_horizontal = bool(
+            np.isfinite(pendiente_sup)
+            and pendiente_sup > 0.15
+        )
+
+        inferior_no_horizontal = bool(
+            np.isfinite(pendiente_inf)
+            and pendiente_inf > 0.15
+        )
+
+        if (
+            superior_no_horizontal
+            or inferior_no_horizontal
+        ):
+            evidencias.append(
+                "TRAMOS_NO_HORIZONTALES"
+            )
+
+        # Rechazo directo si ninguna de las dos ramas ofrece
+        # una horizontal representativa.
+        ambas_no_horizontales = bool(
+            superior_no_horizontal
+            and inferior_no_horizontal
+        )
+
+        # También se rechaza un único tramo
+        # extremadamente inclinado.
+        tramo_extremadamente_inclinado = bool(
+            (
+                np.isfinite(pendiente_sup)
+                and pendiente_sup > 0.30
+            )
+            or (
+                np.isfinite(pendiente_inf)
+                and pendiente_inf > 0.30
+            )
+        )
+
+        confiables = not (
+            gap <= 0
+            or ambas_no_horizontales
+            or tramo_extremadamente_inclinado
+            or len(evidencias) >= 3
+        )
+
         return {
             "confiables": bool(confiables),
             "estado": "HORIZONTALES_OK" if confiables else "HORIZONTALES_NO_ENCONTRADAS",
