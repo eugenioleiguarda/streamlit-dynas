@@ -10,6 +10,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from pipeline_diagnostico import a_array, procesar_json
+from vfm_produccion import predecir_vfm
 
 
 st.set_page_config(
@@ -57,6 +58,11 @@ def lista_alertas(valor):
 @st.cache_data(show_spinner=False)
 def ejecutar_pipeline(contenido: bytes):
     return procesar_json(contenido)
+
+
+@st.cache_data(show_spinner=False)
+def ejecutar_vfm(contenido: bytes):
+    return predecir_vfm(contenido)
 
 
 def obtener_resultado(resultados, carta_id):
@@ -131,8 +137,9 @@ if archivo is None:
     st.stop()
 
 try:
-    with st.spinner("Procesando todas las cartas del JSON…"):
+    with st.spinner("Procesando cartas y calculando producción VFM…"):
         salida = ejecutar_pipeline(archivo.getvalue())
+        produccion_vfm = ejecutar_vfm(archivo.getvalue())
 except Exception as exc:
     st.error("No fue posible procesar el archivo.")
     st.exception(exc)
@@ -146,6 +153,16 @@ diagnosticos["Alertas_lista"] = diagnosticos["Alertas"].map(lista_alertas)
 df = diagnosticos.merge(
     muestra[["CartaId", "GPM", "ProfundidadBomba", "DiametroPistonBomba"]],
     on="CartaId", how="left", suffixes=("", "_API"),
+)
+df["Fecha_Dia"] = pd.to_datetime(
+    df["Fecha"],
+    errors="coerce",
+).dt.normalize()
+df = df.merge(
+    produccion_vfm,
+    on=["Pozo", "Fecha_Dia"],
+    how="left",
+    validate="many_to_one",
 )
 
 todos_principales = sorted(df["Diagnostico_Principal"].dropna().unique().tolist())
@@ -235,6 +252,20 @@ with tab_detalle:
             st.metric("Sumergencia relativa", f"{diag.get('Sumergencia_Relativa_pct', np.nan):.1f}%")
             st.metric("Torque reductor", f"{diag.get('Torque_Reductor_pct', np.nan):.1f}%")
             st.metric("Carga estructural", f"{diag.get('Carga_Estructural_pct', np.nan):.1f}%")
+            st.divider()
+            st.caption("Virtual Flow Meter")
+            st.metric(
+                "Caudal bruto VFM",
+                f"{diag.get('VFM_Bruta_m3_d', np.nan):.2f} m³/d",
+            )
+            st.metric(
+                "Petróleo VFM",
+                f"{diag.get('VFM_Petroleo_m3_d', np.nan):.2f} m³/d",
+            )
+            st.metric(
+                "Agua VFM",
+                f"{diag.get('VFM_Agua_pct', np.nan):.1f}%",
+            )
 
         with derecha:
             st.subheader("Métricas y evidencias")
@@ -255,6 +286,8 @@ with tab_tabla:
         "CartaId", "Pozo", "Fecha", "Diagnostico_Principal", "Alertas",
         "Llenado_Original_pct", "Llenado_Operativo_pct", "Sumergencia_Relativa_pct",
         "Torque_Reductor_pct", "Carga_Estructural_pct",
+        "VFM_Bruta_m3_d", "VFM_Petroleo_m3_d", "VFM_Agua_pct",
+        "VFM_Bruta_Via_Residuo_m3_d", "VFM_Petroleo_Via_Agua_m3_d",
         "GPM", "ProfundidadBomba", "DiametroPistonBomba",
     ]
     columnas_tabla = [c for c in columnas_tabla if c in filtrado.columns]
