@@ -133,6 +133,40 @@ def tabla_exportable(df):
     return salida
 
 
+def figura_barras_comparativas(tabla, titulo, eje_y):
+    """Barras Real/VFM agrupadas, no apiladas."""
+    fig = go.Figure()
+    colores = {
+        "Control real": "#78bff2",
+        "VFM": "#0874d1",
+    }
+    for serie in ["Control real", "VFM"]:
+        fig.add_trace(go.Bar(
+            name=serie,
+            x=tabla.index.astype(str),
+            y=tabla[serie],
+            marker_color=colores[serie],
+            text=tabla[serie].map(lambda v: f"{v:,.1f}"),
+            textposition="outside",
+        ))
+    fig.update_layout(
+        title=titulo,
+        barmode="group",
+        bargap=0.25,
+        bargroupgap=0.08,
+        yaxis_title=eje_y,
+        legend=dict(
+            orientation="h",
+            y=1.12,
+            x=1,
+            xanchor="right",
+        ),
+        margin=dict(l=35, r=20, t=70, b=35),
+        template="plotly_white",
+    )
+    return fig
+
+
 st.title("Diagnóstico de cartas dinamométricas")
 st.caption("Exploración de oportunidades y alertas con reglas geométricas auditables")
 
@@ -250,10 +284,59 @@ with tab_resumen:
         col_caudal, col_porcentaje = st.columns([2, 1])
         with col_caudal:
             st.caption("Suma sobre los mismos pozos coincidentes")
-            st.bar_chart(resumen_controles["caudales"])
+            st.plotly_chart(
+                figura_barras_comparativas(
+                    resumen_controles["caudales"],
+                    "Caudales totales: control real vs VFM",
+                    "Caudal [m³/d]",
+                ),
+                use_container_width=True,
+            )
         with col_porcentaje:
             st.caption("Corte de agua ponderado por caudal bruto")
-            st.bar_chart(resumen_controles["porcentajes"])
+            st.plotly_chart(
+                figura_barras_comparativas(
+                    resumen_controles["porcentajes"],
+                    "Corte de agua: control real vs VFM",
+                    "Porcentaje [%]",
+                ),
+                use_container_width=True,
+            )
+
+        st.subheader("Promedio por pozo")
+        col_promedio, col_promedio_pct = st.columns([2, 1])
+        with col_promedio:
+            st.plotly_chart(
+                figura_barras_comparativas(
+                    resumen_controles["promedios"],
+                    "Caudal promedio por pozo: control real vs VFM",
+                    "Caudal promedio [m³/d/pozo]",
+                ),
+                use_container_width=True,
+            )
+        with col_promedio_pct:
+            st.plotly_chart(
+                figura_barras_comparativas(
+                    resumen_controles["porcentajes_promedio"],
+                    "Corte de agua promedio por pozo",
+                    "Porcentaje promedio [%]",
+                ),
+                use_container_width=True,
+            )
+
+        st.subheader("Estadísticas descriptivas comparativas")
+        st.caption(
+            "Media, mediana y desviación estándar calculadas sobre "
+            "los mismos pozos con control comparable."
+        )
+        estadisticas = resumen_controles["estadisticas"].copy()
+        for columna in ["Media", "Mediana", "Desviación estándar"]:
+            estadisticas[columna] = estadisticas[columna].round(2)
+        st.dataframe(
+            estadisticas,
+            use_container_width=True,
+            hide_index=True,
+        )
 
     conteo = df["Diagnostico_Principal"].value_counts().rename_axis("Diagnóstico").reset_index(name="Cantidad")
     st.subheader("Diagnóstico principal")
@@ -295,6 +378,60 @@ with tab_detalle:
         resultado = obtener_resultado(resultados, diag["CartaId"])
         st.plotly_chart(figura_carta(carta, resultado, diag), use_container_width=True)
 
+        st.subheader("Virtual Flow Meter vs control real")
+        columna_vfm, columna_real = st.columns(2)
+        with columna_vfm:
+            st.caption("Virtual Flow Meter")
+            v1, v2, v3 = st.columns(3)
+            v1.metric(
+                "Caudal bruto",
+                f"{diag.get('VFM_Bruta_m3_d', np.nan):.2f} m³/d",
+            )
+            v2.metric(
+                "Petróleo neto",
+                f"{diag.get('VFM_Petroleo_m3_d', np.nan):.2f} m³/d",
+            )
+            v3.metric(
+                "Corte de agua",
+                f"{diag.get('VFM_Agua_pct', np.nan):.1f}%",
+            )
+
+        with columna_real:
+            st.caption("Control real comparable")
+            if pd.notna(diag.get("Fecha_Control")):
+                r1, r2, r3 = st.columns(3)
+                r1.metric(
+                    "Caudal bruto",
+                    f"{diag.get('Control_Bruta_m3_d', np.nan):.2f} m³/d",
+                    delta=f"{diag.get('Delta_Bruta_m3_d', np.nan):+.2f} m³/d",
+                )
+                r2.metric(
+                    "Petróleo neto",
+                    f"{diag.get('Control_Petroleo_m3_d', np.nan):.2f} m³/d",
+                    delta=f"{diag.get('Delta_Petroleo_m3_d', np.nan):+.2f} m³/d",
+                )
+                r3.metric(
+                    "Corte de agua",
+                    f"{diag.get('Control_Agua_pct', np.nan):.1f}%",
+                    delta=f"{diag.get('Delta_Agua_pp', np.nan):+.1f} pp",
+                )
+                fecha_control = pd.to_datetime(diag["Fecha_Control"])
+                st.caption(
+                    f"Control: {fecha_control:%d/%m/%Y} · "
+                    f"{int(diag.get('Control_Antiguedad_dias', 0))} días de antigüedad · "
+                    f"Estado: {diag.get('Estado_Control', '')}"
+                )
+            else:
+                st.warning(
+                    "No hay un control real anterior disponible para este pozo."
+                )
+
+        if pd.notna(diag.get("Fecha_Control")):
+            st.info(
+                "**Comentario de la comparación:** "
+                + str(diag.get("Comentario_VFM_Control", ""))
+            )
+
         izquierda, derecha = st.columns([1, 2])
         with izquierda:
             st.subheader("Diagnósticos")
@@ -305,47 +442,6 @@ with tab_detalle:
             st.metric("Sumergencia relativa", f"{diag.get('Sumergencia_Relativa_pct', np.nan):.1f}%")
             st.metric("Torque reductor", f"{diag.get('Torque_Reductor_pct', np.nan):.1f}%")
             st.metric("Carga estructural", f"{diag.get('Carga_Estructural_pct', np.nan):.1f}%")
-            st.divider()
-            st.caption("Virtual Flow Meter")
-            st.metric(
-                "Caudal bruto VFM",
-                f"{diag.get('VFM_Bruta_m3_d', np.nan):.2f} m³/d",
-            )
-            st.metric(
-                "Petróleo VFM",
-                f"{diag.get('VFM_Petroleo_m3_d', np.nan):.2f} m³/d",
-            )
-            st.metric(
-                "Agua VFM",
-                f"{diag.get('VFM_Agua_pct', np.nan):.1f}%",
-            )
-            st.divider()
-            st.caption("Control real comparable")
-            if pd.notna(diag.get("Fecha_Control")):
-                st.metric(
-                    "Caudal bruto real",
-                    f"{diag.get('Control_Bruta_m3_d', np.nan):.2f} m³/d",
-                    delta=f"{diag.get('Delta_Bruta_m3_d', np.nan):+.2f} m³/d VFM-real",
-                )
-                st.metric(
-                    "Petróleo real",
-                    f"{diag.get('Control_Petroleo_m3_d', np.nan):.2f} m³/d",
-                    delta=f"{diag.get('Delta_Petroleo_m3_d', np.nan):+.2f} m³/d VFM-real",
-                )
-                st.metric(
-                    "Agua real",
-                    f"{diag.get('Control_Agua_pct', np.nan):.1f}%",
-                    delta=f"{diag.get('Delta_Agua_pp', np.nan):+.1f} pp VFM-real",
-                )
-                fecha_control = pd.to_datetime(diag["Fecha_Control"])
-                st.caption(
-                    f"Control: {fecha_control:%d/%m/%Y} · "
-                    f"{int(diag.get('Control_Antiguedad_dias', 0))} días de antigüedad · "
-                    f"Estado: {diag.get('Estado_Control', '')}"
-                )
-                st.info(diag.get("Comentario_VFM_Control", ""))
-            else:
-                st.warning("No hay un control real anterior disponible para este pozo.")
 
         with derecha:
             st.subheader("Métricas y evidencias")

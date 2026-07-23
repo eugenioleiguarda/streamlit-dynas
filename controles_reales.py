@@ -208,6 +208,9 @@ def resumen_comparacion(comparacion: pd.DataFrame) -> dict:
             "cobertura_pct": 0.0,
             "caudales": pd.DataFrame(),
             "porcentajes": pd.DataFrame(),
+            "promedios": pd.DataFrame(),
+            "porcentajes_promedio": pd.DataFrame(),
+            "estadisticas": pd.DataFrame(),
         }
 
     real_bruta = coincidentes["Control_Bruta_m3_d"].sum()
@@ -239,6 +242,70 @@ def resumen_comparacion(comparacion: pd.DataFrame) -> dict:
         },
         index=["Corte de agua [%]"],
     )
+    promedios = pd.DataFrame(
+        {
+            "Control real": [
+                coincidentes["Control_Bruta_m3_d"].mean(),
+                coincidentes["Control_Petroleo_m3_d"].mean(),
+            ],
+            "VFM": [
+                coincidentes["VFM_Bruta_m3_d"].mean(),
+                coincidentes["VFM_Petroleo_m3_d"].mean(),
+            ],
+        },
+        index=[
+            "Bruta promedio [m³/d/pozo]",
+            "Petróleo promedio [m³/d/pozo]",
+        ],
+    )
+    porcentajes_promedio = pd.DataFrame(
+        {
+            "Control real": [
+                coincidentes["Control_Agua_pct"].mean()
+            ],
+            "VFM": [
+                coincidentes["VFM_Agua_pct"].mean()
+            ],
+        },
+        index=["Corte de agua promedio [%/pozo]"],
+    )
+
+    pares = [
+        (
+            "Caudal bruto [m³/d]",
+            "Control_Bruta_m3_d",
+            "VFM_Bruta_m3_d",
+        ),
+        (
+            "Petróleo neto [m³/d]",
+            "Control_Petroleo_m3_d",
+            "VFM_Petroleo_m3_d",
+        ),
+        (
+            "Corte de agua [%]",
+            "Control_Agua_pct",
+            "VFM_Agua_pct",
+        ),
+    ]
+    filas_estadisticas = []
+    for variable, columna_real, columna_vfm in pares:
+        for origen, columna in [
+            ("Control real", columna_real),
+            ("VFM", columna_vfm),
+        ]:
+            valores = pd.to_numeric(
+                coincidentes[columna], errors="coerce"
+            ).dropna()
+            filas_estadisticas.append({
+                "Variable": variable,
+                "Origen": origen,
+                "Cantidad": int(valores.count()),
+                "Media": float(valores.mean()),
+                "Mediana": float(valores.median()),
+                "Desviación estándar": float(valores.std(ddof=1)),
+            })
+    estadisticas = pd.DataFrame(filas_estadisticas)
+
     return {
         "cantidad": cantidad,
         "total": cantidad_total,
@@ -247,4 +314,7 @@ def resumen_comparacion(comparacion: pd.DataFrame) -> dict:
         else 0.0,
         "caudales": caudales,
         "porcentajes": porcentajes,
+        "promedios": promedios,
+        "porcentajes_promedio": porcentajes_promedio,
+        "estadisticas": estadisticas,
     }
