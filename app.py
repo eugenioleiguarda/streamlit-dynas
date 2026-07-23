@@ -11,6 +11,11 @@ import streamlit as st
 
 from pipeline_diagnostico import a_array, procesar_json
 from vfm_produccion import predecir_vfm
+from controles_reales import (
+    cruzar_controles,
+    leer_controles,
+    resumen_comparacion,
+)
 
 
 st.set_page_config(
@@ -63,6 +68,11 @@ def ejecutar_pipeline(contenido: bytes):
 @st.cache_data(show_spinner=False)
 def ejecutar_vfm(contenido: bytes):
     return predecir_vfm(contenido)
+
+
+@st.cache_data(show_spinner=False)
+def ejecutar_controles(contenido: bytes | None):
+    return leer_controles(contenido)
 
 
 def obtener_resultado(resultados, carta_id):
@@ -132,6 +142,15 @@ archivo = st.sidebar.file_uploader(
     help="El archivo puede contener una lista directa o un objeto con la colección items.",
 )
 
+archivo_controles = st.sidebar.file_uploader(
+    "Actualizar controles reales (opcional)",
+    type=["xlsx"],
+    help=(
+        "Si no cargás un archivo se utiliza controles_reales.xlsx "
+        "incluido en la aplicación."
+    ),
+)
+
 if archivo is None:
     st.info("Cargá el JSON de la API desde la barra lateral para iniciar el análisis.")
     st.stop()
@@ -140,6 +159,15 @@ try:
     with st.spinner("Procesando cartas y calculando producción VFM…"):
         salida = ejecutar_pipeline(archivo.getvalue())
         produccion_vfm = ejecutar_vfm(archivo.getvalue())
+        controles = ejecutar_controles(
+            archivo_controles.getvalue()
+            if archivo_controles is not None
+            else None
+        )
+        comparacion_vfm = cruzar_controles(
+            produccion_vfm,
+            controles,
+        )
 except Exception as exc:
     st.error("No fue posible procesar el archivo.")
     st.exception(exc)
@@ -159,7 +187,7 @@ df["Fecha_Dia"] = pd.to_datetime(
     errors="coerce",
 ).dt.normalize()
 df = df.merge(
-    produccion_vfm,
+    comparacion_vfm.drop(columns=["Pozo_Clave"], errors="ignore"),
     on=["Pozo", "Fecha_Dia"],
     how="left",
     validate="many_to_one",
@@ -201,6 +229,31 @@ with tab_resumen:
     c2.metric("Pozos únicos", df["Pozo"].nunique())
     c3.metric("Resultado del filtro", len(filtrado))
     c4.metric("Múltiples alertas", int(df["Alertas_lista"].map(len).gt(1).sum()))
+
+    resumen_controles = resumen_comparacion(comparacion_vfm)
+    st.subheader("Producción VFM vs controles reales")
+    r1, r2, r3 = st.columns(3)
+    r1.metric(
+        "Pozos con control comparable",
+        f"{resumen_controles['cantidad']} / {resumen_controles['total']}",
+    )
+    r2.metric(
+        "Cobertura",
+        f"{resumen_controles['cobertura_pct']:.1f}%",
+    )
+    if not controles.empty:
+        r3.metric(
+            "Último control disponible",
+            pd.to_datetime(controles["Fecha_Control"]).max().strftime("%d/%m/%Y"),
+        )
+    if resumen_controles["cantidad"]:
+        col_caudal, col_porcentaje = st.columns([2, 1])
+        with col_caudal:
+            st.caption("Suma sobre los mismos pozos coincidentes")
+            st.bar_chart(resumen_controles["caudales"])
+        with col_porcentaje:
+            st.caption("Corte de agua ponderado por caudal bruto")
+            st.bar_chart(resumen_controles["porcentajes"])
 
     conteo = df["Diagnostico_Principal"].value_counts().rename_axis("Diagnóstico").reset_index(name="Cantidad")
     st.subheader("Diagnóstico principal")
@@ -266,6 +319,33 @@ with tab_detalle:
                 "Agua VFM",
                 f"{diag.get('VFM_Agua_pct', np.nan):.1f}%",
             )
+            st.divider()
+            st.caption("Control real comparable")
+            if pd.notna(diag.get("Fecha_Control")):
+                st.metric(
+                    "Caudal bruto real",
+                    f"{diag.get('Control_Bruta_m3_d', np.nan):.2f} m³/d",
+                    delta=f"{diag.get('Delta_Bruta_m3_d', np.nan):+.2f} m³/d VFM-real",
+                )
+                st.metric(
+                    "Petróleo real",
+                    f"{diag.get('Control_Petroleo_m3_d', np.nan):.2f} m³/d",
+                    delta=f"{diag.get('Delta_Petroleo_m3_d', np.nan):+.2f} m³/d VFM-real",
+                )
+                st.metric(
+                    "Agua real",
+                    f"{diag.get('Control_Agua_pct', np.nan):.1f}%",
+                    delta=f"{diag.get('Delta_Agua_pp', np.nan):+.1f} pp VFM-real",
+                )
+                fecha_control = pd.to_datetime(diag["Fecha_Control"])
+                st.caption(
+                    f"Control: {fecha_control:%d/%m/%Y} · "
+                    f"{int(diag.get('Control_Antiguedad_dias', 0))} días de antigüedad · "
+                    f"Estado: {diag.get('Estado_Control', '')}"
+                )
+                st.info(diag.get("Comentario_VFM_Control", ""))
+            else:
+                st.warning("No hay un control real anterior disponible para este pozo.")
 
         with derecha:
             st.subheader("Métricas y evidencias")
@@ -288,6 +368,11 @@ with tab_tabla:
         "Torque_Reductor_pct", "Carga_Estructural_pct",
         "VFM_Bruta_m3_d", "VFM_Petroleo_m3_d", "VFM_Agua_pct",
         "VFM_Bruta_Via_Residuo_m3_d", "VFM_Petroleo_Via_Agua_m3_d",
+        "Fecha_Control", "Control_Antiguedad_dias", "Estado_Control",
+        "Control_Bruta_m3_d", "Control_Petroleo_m3_d", "Control_Agua_m3_d",
+        "Control_Agua_pct", "Delta_Bruta_m3_d", "Error_Bruta_pct",
+        "Delta_Petroleo_m3_d", "Error_Petroleo_pct", "Delta_Agua_pp",
+        "Comentario_VFM_Control",
         "GPM", "ProfundidadBomba", "DiametroPistonBomba",
     ]
     columnas_tabla = [c for c in columnas_tabla if c in filtrado.columns]
