@@ -167,6 +167,60 @@ def figura_barras_comparativas(tabla, titulo, eje_y):
     return fig
 
 
+def tarjeta_vfm_control(
+    titulo,
+    valor_vfm,
+    valor_real,
+    delta,
+    unidad,
+    decimales=2,
+    unidad_delta=None,
+):
+    real_disponible = pd.notna(valor_real)
+    texto_real = (
+        f"{valor_real:.{decimales}f} {unidad}"
+        if real_disponible
+        else "Sin control"
+    )
+    texto_delta = (
+        f"VFM − real: {delta:+.{decimales}f} {unidad_delta or unidad}"
+        if real_disponible and pd.notna(delta)
+        else "&nbsp;"
+    )
+    st.markdown(
+        f"""
+        <div style="
+            border:1px solid rgba(128,128,128,.25);
+            border-radius:10px;
+            padding:12px 14px;
+            min-height:122px;
+        ">
+            <div style="font-size:.95rem;font-weight:600;margin-bottom:8px;">
+                {titulo}
+            </div>
+            <div style="display:flex;gap:22px;align-items:flex-start;">
+                <div style="flex:1;">
+                    <div style="font-size:.75rem;opacity:.65;">VFM</div>
+                    <div style="font-size:1.45rem;font-weight:600;white-space:nowrap;">
+                        {valor_vfm:.{decimales}f} {unidad}
+                    </div>
+                </div>
+                <div style="flex:1;">
+                    <div style="font-size:.75rem;opacity:.65;">Control real</div>
+                    <div style="font-size:1.45rem;font-weight:600;white-space:nowrap;">
+                        {texto_real}
+                    </div>
+                </div>
+            </div>
+            <div style="font-size:.78rem;margin-top:8px;color:#38b86b;">
+                {texto_delta}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 st.title("Diagnóstico de cartas dinamométricas")
 st.caption("Exploración de oportunidades y alertas con reglas geométricas auditables")
 
@@ -425,52 +479,43 @@ with tab_detalle:
         st.plotly_chart(figura_carta(carta, resultado, diag), use_container_width=True)
 
         st.subheader("Virtual Flow Meter vs control real")
-        columna_vfm, columna_real = st.columns(2)
-        with columna_vfm:
-            st.caption("Virtual Flow Meter")
-            v1, v2, v3 = st.columns(3)
-            v1.metric(
+        t1, t2, t3 = st.columns(3)
+        with t1:
+            tarjeta_vfm_control(
                 "Caudal bruto",
-                f"{diag.get('VFM_Bruta_m3_d', np.nan):.2f} m³/d",
+                diag.get("VFM_Bruta_m3_d", np.nan),
+                diag.get("Control_Bruta_m3_d", np.nan),
+                diag.get("Delta_Bruta_m3_d", np.nan),
+                "m³/d",
+                decimales=2,
             )
-            v2.metric(
+        with t2:
+            tarjeta_vfm_control(
                 "Petróleo neto",
-                f"{diag.get('VFM_Petroleo_m3_d', np.nan):.2f} m³/d",
+                diag.get("VFM_Petroleo_m3_d", np.nan),
+                diag.get("Control_Petroleo_m3_d", np.nan),
+                diag.get("Delta_Petroleo_m3_d", np.nan),
+                "m³/d",
+                decimales=2,
             )
-            v3.metric(
+        with t3:
+            tarjeta_vfm_control(
                 "Corte de agua",
-                f"{diag.get('VFM_Agua_pct', np.nan):.1f}%",
+                diag.get("VFM_Agua_pct", np.nan),
+                diag.get("Control_Agua_pct", np.nan),
+                diag.get("Delta_Agua_pp", np.nan),
+                "%",
+                decimales=1,
+                unidad_delta="pp",
             )
 
-        with columna_real:
-            st.caption("Control real comparable")
-            if pd.notna(diag.get("Fecha_Control")):
-                r1, r2, r3 = st.columns(3)
-                r1.metric(
-                    "Caudal bruto",
-                    f"{diag.get('Control_Bruta_m3_d', np.nan):.2f} m³/d",
-                    delta=f"{diag.get('Delta_Bruta_m3_d', np.nan):+.2f} m³/d",
-                )
-                r2.metric(
-                    "Petróleo neto",
-                    f"{diag.get('Control_Petroleo_m3_d', np.nan):.2f} m³/d",
-                    delta=f"{diag.get('Delta_Petroleo_m3_d', np.nan):+.2f} m³/d",
-                )
-                r3.metric(
-                    "Corte de agua",
-                    f"{diag.get('Control_Agua_pct', np.nan):.1f}%",
-                    delta=f"{diag.get('Delta_Agua_pp', np.nan):+.1f} pp",
-                )
-                fecha_control = pd.to_datetime(diag["Fecha_Control"])
-                st.caption(
-                    f"Control: {fecha_control:%d/%m/%Y} · "
-                    f"{int(diag.get('Control_Antiguedad_dias', 0))} días de antigüedad · "
-                    f"Estado: {diag.get('Estado_Control', '')}"
-                )
-            else:
-                st.warning(
-                    "No hay un control real anterior disponible para este pozo."
-                )
+        if pd.notna(diag.get("Fecha_Control")):
+            fecha_control = pd.to_datetime(diag["Fecha_Control"])
+            st.caption(
+                f"Control utilizado: {fecha_control:%d/%m/%Y} · "
+                f"{int(diag.get('Control_Antiguedad_dias', 0))} días de antigüedad · "
+                f"Estado: {diag.get('Estado_Control', '')}"
+            )
 
         if pd.notna(diag.get("Fecha_Control")):
             st.info(
