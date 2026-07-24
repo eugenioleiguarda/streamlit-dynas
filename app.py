@@ -264,7 +264,20 @@ with tab_resumen:
     c3.metric("Resultado del filtro", len(filtrado))
     c4.metric("Múltiples alertas", int(df["Alertas_lista"].map(len).gt(1).sum()))
 
-    resumen_controles = resumen_comparacion(comparacion_vfm)
+    # El resumen debe responder a todos los filtros activos.
+    # Se conserva una sola observación por pozo y día para evitar
+    # duplicar caudales si hubiera más de una carta seleccionada.
+    comparacion_filtrada = (
+        filtrado
+        .sort_values("Fecha")
+        .drop_duplicates(
+            subset=["Pozo", "Fecha_Dia"],
+            keep="last",
+        )
+    )
+    resumen_controles = resumen_comparacion(
+        comparacion_filtrada
+    )
     st.subheader("Producción VFM vs controles reales")
     r1, r2, r3 = st.columns(3)
     r1.metric(
@@ -275,10 +288,14 @@ with tab_resumen:
         "Cobertura",
         f"{resumen_controles['cobertura_pct']:.1f}%",
     )
-    if not controles.empty:
+    fechas_control_filtradas = pd.to_datetime(
+        comparacion_filtrada.get("Fecha_Control"),
+        errors="coerce",
+    ).dropna()
+    if not fechas_control_filtradas.empty:
         r3.metric(
             "Último control disponible",
-            pd.to_datetime(controles["Fecha_Control"]).max().strftime("%d/%m/%Y"),
+            fechas_control_filtradas.max().strftime("%d/%m/%Y"),
         )
     if resumen_controles["cantidad"]:
         col_caudal, col_porcentaje = st.columns([2, 1])
@@ -365,6 +382,35 @@ with tab_explorador:
                 st.plotly_chart(figura_carta(carta, resultado, diag, compacta=True), use_container_width=True)
                 for alerta in diag["Alertas_lista"]:
                     st.caption(f"• {alerta}")
+
+                vfm_bruta = diag.get("VFM_Bruta_m3_d", np.nan)
+                vfm_neta = diag.get("VFM_Petroleo_m3_d", np.nan)
+                real_bruta = diag.get("Control_Bruta_m3_d", np.nan)
+                real_neta = diag.get("Control_Petroleo_m3_d", np.nan)
+
+                st.markdown("**Caudales [m³/d]**")
+                col_vfm, col_real = st.columns(2)
+                with col_vfm:
+                    st.caption("VFM")
+                    st.write(
+                        f"Bruta: **{vfm_bruta:.2f}**  \n"
+                        f"Neta: **{vfm_neta:.2f}**"
+                    )
+                with col_real:
+                    st.caption("Último control")
+                    if pd.notna(real_bruta):
+                        st.write(
+                            f"Bruta: **{real_bruta:.2f}**  \n"
+                            f"Neta: **{real_neta:.2f}**"
+                        )
+                        fecha_control = pd.to_datetime(
+                            diag.get("Fecha_Control"),
+                            errors="coerce",
+                        )
+                        if pd.notna(fecha_control):
+                            st.caption(f"{fecha_control:%d/%m/%Y}")
+                    else:
+                        st.write("Sin control")
 
 with tab_detalle:
     opciones = filtrado.apply(lambda r: f"{r['Pozo']} · Carta {int(r['CartaId'])}", axis=1).tolist()
