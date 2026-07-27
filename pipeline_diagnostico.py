@@ -1035,80 +1035,21 @@ def procesar_json(origen, silencioso=True):
         pendiente_sup = calidad_horizontal_tramo(asc, linea_asc, rango_y)
         pendiente_inf = calidad_horizontal_tramo(desc, linea_desc, rango_y)
 
-        
         evidencias = []
-
         if gap <= 0:
-            evidencias.append(
-                "HORIZONTALES_INVERTIDAS"
-            )
-
-        if (
-            np.isfinite(ratio_gap_api)
-            and ratio_gap_api < 0.50
-        ):
-            evidencias.append(
-                "SEPARACION_MENOR_50PCT_PESO_API"
-            )
-
+            evidencias.append("HORIZONTALES_INVERTIDAS")
+        if np.isfinite(ratio_gap_api) and ratio_gap_api < 0.50:
+            evidencias.append("SEPARACION_MENOR_50PCT_PESO_API")
         if compacidad < 0.20:
-            evidencias.append(
-                "CARTA_DIAGONAL_ANGOSTA"
-            )
+            evidencias.append("CARTA_DIAGONAL_ANGOSTA")
+        if np.isfinite(llenado_api) and llenado_api <= 15:
+            evidencias.append("LLENADO_API_MUY_BAJO")
+        if ((np.isfinite(pendiente_sup) and pendiente_sup > 0.15)
+                or (np.isfinite(pendiente_inf) and pendiente_inf > 0.15)):
+            evidencias.append("TRAMOS_NO_HORIZONTALES")
 
-        if (
-            np.isfinite(llenado_api)
-            and llenado_api <= 15
-        ):
-            evidencias.append(
-                "LLENADO_API_MUY_BAJO"
-            )
-
-        superior_no_horizontal = bool(
-            np.isfinite(pendiente_sup)
-            and pendiente_sup > 0.15
-        )
-
-        inferior_no_horizontal = bool(
-            np.isfinite(pendiente_inf)
-            and pendiente_inf > 0.15
-        )
-
-        if (
-            superior_no_horizontal
-            or inferior_no_horizontal
-        ):
-            evidencias.append(
-                "TRAMOS_NO_HORIZONTALES"
-            )
-
-        # Rechazo directo si ninguna de las dos ramas ofrece
-        # una horizontal representativa.
-        ambas_no_horizontales = bool(
-            superior_no_horizontal
-            and inferior_no_horizontal
-        )
-
-        # También se rechaza un único tramo
-        # extremadamente inclinado.
-        tramo_extremadamente_inclinado = bool(
-            (
-                np.isfinite(pendiente_sup)
-                and pendiente_sup > 0.30
-            )
-            or (
-                np.isfinite(pendiente_inf)
-                and pendiente_inf > 0.30
-            )
-        )
-            
-        confiables = not (
-            gap <= 0
-            or ambas_no_horizontales
-            or tramo_extremadamente_inclinado
-            or len(evidencias) >= 3
-        )
-
+        # Inversión es suficiente. Sin inversión exigimos tres evidencias concurrentes.
+        confiables = not (gap <= 0 or len(evidencias) >= 3)
         return {
             "confiables": bool(confiables),
             "estado": "HORIZONTALES_OK" if confiables else "HORIZONTALES_NO_ENCONTRADAS",
@@ -2837,12 +2778,7 @@ def procesar_json(origen, silencioso=True):
             "extension_horizontal_pct":
                 extension_horizontal,
             "ancho_20_80_pct": float(100 * candidato["ancho"]),
-            "inicio_transferencia_u_pct": float(
-                100 * min(
-                    cruce_20["u"],
-                    cruce_80["u"],
-                )
-            ),
+            "inicio_transferencia_u_pct": float(100 * cruce_20["u"]),
         }
 
 
@@ -3446,36 +3382,11 @@ def procesar_json(origen, silencioso=True):
         # --------------------------------------------------------
         # 1. SIN TRABAJO DE BOMBA
         # --------------------------------------------------------
-        # --------------------------------------------------------
-        # 1. SIN TRABAJO DE BOMBA
-        # --------------------------------------------------------
 
-        compacidad_carta = pd.to_numeric(
-            resultado.get(
-                "Compacidad_Carta",
-                np.nan,
-            ),
-            errors="coerce",
-        )
-
-        # Condición que ya existía.
-        sin_trabajo_anterior = bool(
+        sin_trabajo = bool(
             resultado[
                 "Posible_Sin_Trabajo_Bomba"
             ]
-        )
-
-        # Nueva condición basada en el área encerrada
-        # por la carta real.
-        sin_trabajo_por_area = bool(
-            np.isfinite(compacidad_carta)
-            and compacidad_carta < 0.23
-        )
-
-        # Se activa si se cumple cualquiera de las dos.
-        sin_trabajo = bool(
-            sin_trabajo_anterior
-            or sin_trabajo_por_area
         )
 
         if sin_trabajo:
@@ -3483,36 +3394,18 @@ def procesar_json(origen, silencioso=True):
                 "Posible sin trabajo de bomba"
             )
 
-            if (
-                sin_trabajo_anterior
-                and sin_trabajo_por_area
-            ):
-                evidencias.append(
-                    "Horizontales no confiables y "
-                    "área real insuficiente"
-                )
-
-            elif sin_trabajo_por_area:
-                evidencias.append(
-                    "Área encerrada por la carta real "
-                    "menor al 23 % de su envolvente"
-                )
-
-            else:
-                evidencias.append(
-                    "No se identificaron horizontales confiables"
-                )
-        
+            evidencias.append(
+                "No se identificaron horizontales confiables"
+            )
 
         # Las siguientes reglas necesitan carta ideal válida.
-        horizontales_ok = bool(
+        horizontales_ok = (
             resultado[
                 "Estado_Horizontales"
             ]
             == "HORIZONTALES_OK"
-            and not sin_trabajo
         )
-        
+
         # Recuperar vacíos.
         vacio_si = metrica.get(
             "Area_Faltante_Superior_Izquierdo_pct",
@@ -3584,18 +3477,15 @@ def procesar_json(origen, silencioso=True):
             )
 
         # --------------------------------------------------------
-        # LLENADO OPERATIVO BASADO EN LA ZONA INFERIOR
+        # LLENADO AJUSTADO PARA VÁLVULA VIAJERA
         # --------------------------------------------------------
 
         # Cada cuadrante representa el 25 % del área ideal.
-        # Los vacíos superiores no se consideran pérdida de
-        # llenado porque pueden deberse a transferencia de carga,
-        # válvulas u otros efectos. Se conservan como métricas
-        # diagnósticas independientes.
+        # Si hay pérdida de viajera, los vacíos superiores
+        # no se descuentan del llenado operativo.
         if (
-            np.isfinite(llenado)
-            and np.isfinite(vacio_si)
-            and np.isfinite(vacio_sd)
+            perdida_valvula
+            and np.isfinite(llenado)
         ):
             llenado_operativo = (
                 llenado
@@ -3603,17 +3493,17 @@ def procesar_json(origen, silencioso=True):
                 + 0.25 * vacio_sd
             )
 
-            llenado_operativo = float(
-                np.clip(
-                    llenado_operativo,
-                    0.0,
-                    100.0,
-                )
+            llenado_operativo = min(
+                llenado_operativo,
+                100.0,
             )
 
         else:
             llenado_operativo = llenado
 
+        # --------------------------------------------------------
+        # 3. GOLPE DE FLUIDO / COMPRESIÓN DE GAS
+        # --------------------------------------------------------
         # --------------------------------------------------------
         # 3. GOLPE DE FLUIDO / COMPRESIÓN DE GAS
         # --------------------------------------------------------
@@ -3660,11 +3550,8 @@ def procesar_json(origen, silencioso=True):
         )
 
         hay_indicio_admision = bool(
-            horizontales_ok
-            and (
-                vacio_derecho_marcado
-                or vacio_derecho_suave
-            )
+            vacio_derecho_marcado
+            or vacio_derecho_suave
         )
 
         # --------------------------------------------------------
@@ -3709,30 +3596,30 @@ def procesar_json(origen, silencioso=True):
                 and not transferencia_abrupta
             )
 
-        # --------------------------------------------------------
-        # RESPALDO CUANDO LA TRANSFERENCIA NO PUDO MEDIRSE
-        # --------------------------------------------------------
+        # Respaldo conservador cuando la transferencia derecha no
+        # pudo medirse. No alcanza con un vacío inferior aislado:
+        # se exige también vacío superior, llenado incompleto y
+        # horizontales confiables.
         transferencia_no_mensurable = bool(
             not np.isfinite(ancho_transferencia_20_80)
+            and not np.isfinite(inicio_transferencia_derecha)
             and not np.isfinite(pendiente_transferencia)
             and not np.isfinite(curvatura_transferencia)
         )
 
-        # --------------------------------------------------------
-        # ASIGNACIÓN DEL DIAGNÓSTICO
-        # --------------------------------------------------------
-        if (
-            hay_indicio_admision
-            and transferencia_no_mensurable
+        transferencia_progresiva_inferida = bool(
+            transferencia_no_mensurable
+            and horizontales_ok
             and np.isfinite(vacio_sd)
             and np.isfinite(vacio_id)
             and np.isfinite(llenado)
-            and vacio_sd >= 8.0
-            and vacio_id >= 20.0
-            and llenado < 90.0
-        ):
-            transferencia_progresiva = True
+            and vacio_sd >= 4.0
+            and vacio_id >= 25.0
+            and llenado < 92.0
+        )
 
+        if transferencia_progresiva_inferida:
+            transferencia_progresiva = True
 
         if hay_indicio_admision:
             if transferencia_abrupta:
@@ -3762,10 +3649,17 @@ def procesar_json(origen, silencioso=True):
                         "Posible compresión/interferencia de gas suave"
                     )
 
-                    evidencias.append(
-                        "Vacíos derechos moderados y "
-                        "transferencia progresiva"
-                    )
+                    if transferencia_progresiva_inferida:
+                        evidencias.append(
+                            "Vacíos derechos moderados; "
+                            "transferencia no mensurable e "
+                            "inferida como progresiva"
+                        )
+                    else:
+                        evidencias.append(
+                            "Vacíos derechos moderados y "
+                            "transferencia progresiva"
+                        )
 
                 else:
                     alertas.append(
@@ -3825,11 +3719,11 @@ def procesar_json(origen, silencioso=True):
             and not sin_trabajo
             and not golpe_fluido
             and not compresion_gas
+            and datos_operativos_validos
             and np.isfinite(llenado_operativo)
             and np.isfinite(sumergencia_relativa)
             and llenado_operativo >= 85.0
             and sumergencia_relativa >= 10.0
-            and sumergencia_relativa <= 100.0
         )
 
         if subexplotado:
@@ -3995,105 +3889,51 @@ def procesar_json(origen, silencioso=True):
         # El exceso de torque y el exceso de carga estructural
         # permanecen como alertas operativas. No reemplazan el
         # diagnóstico dinamométrico principal de la carta.
-        if sin_trabajo:
-            diagnostico_principal = (
-                "Posible sin trabajo de bomba"
-            )
-
-            accion = (
-                "Revisar bomba, sarta y "
-                "representatividad de la carta"
-            )
-
-            confianza = 0.90
-
-        elif subexplotado:
-            diagnostico_principal = (
-                "Posible pozo subexplotado"
-            )
-
-            accion = (
-                "Evaluar aumento de régimen y "
-                "revisar alertas secundarias"
-            )
-
+        if subexplotado:
+            diagnostico_principal = "Posible pozo subexplotado"
+            accion = "Evaluar aumento de régimen y revisar alertas secundarias"
             confianza = 0.72
-
+        elif sin_trabajo:
+            diagnostico_principal = "Posible sin trabajo de bomba"
+            accion = "Revisar bomba, sarta y carta de superficie"
+            confianza = 0.90
         elif golpe_fluido:
-            diagnostico_principal = (
-                "Posible golpe de fluido"
-            )
-
-            accion = (
-                "Evaluar disminución de régimen"
-            )
-
+            diagnostico_principal = "Posible golpe de fluido"
+            accion = "Evaluar disminución de régimen"
             confianza = 0.78
-
         elif compresion_gas:
             if compresion_gas_suave:
                 diagnostico_principal = (
-                    "Posible compresión/interferencia "
-                    "de gas suave"
+                    "Posible compresión/interferencia de gas suave"
                 )
 
                 confianza = 0.68
 
             else:
                 diagnostico_principal = (
-                    "Posible compresión/interferencia "
-                    "de gas"
+                    "Posible compresión/interferencia de gas"
                 )
 
                 confianza = 0.74
 
             accion = (
-                "Evaluar condición de admisión "
-                "y revisar régimen"
+                "Evaluar condición de admisión y revisar régimen"
             )
-
         elif perdida_valvula:
-            diagnostico_principal = (
-                "Posible pérdida en válvula viajera"
-            )
-
-            accion = (
-                "Revisar válvula viajera"
-            )
-
+            diagnostico_principal = "Posible pérdida en válvula viajera"
+            accion = "Revisar válvula viajera"
             confianza = 0.76
-
         elif golpe_bomba:
-            diagnostico_principal = (
-                "Posible golpe de bomba"
-            )
-
-            accion = (
-                "Revisar espaciamiento"
-            )
-
+            diagnostico_principal = "Posible golpe de bomba"
+            accion = "Revisar espaciamiento"
             confianza = 0.82
-
         elif tubing_libre:
-            diagnostico_principal = (
-                "Posible tubing libre"
-            )
-
-            accion = (
-                "Revisar condición y anclaje del tubing"
-            )
-
+            diagnostico_principal = "Posible tubing libre"
+            accion = "Revisar condición y anclaje del tubing"
             confianza = 0.68
-
         else:
-            diagnostico_principal = (
-                "Sin diagnóstico automático"
-            )
-
-            accion = (
-                "Revisión visual"
-            )
-
+            diagnostico_principal = "Sin diagnóstico automático"
+            accion = "Revisión visual"
             confianza = 0.30
 
         filas_diagnosticos.append({
@@ -4120,10 +3960,6 @@ def procesar_json(origen, silencioso=True):
                 carga_estructural_pct,
             "Sin_Trabajo_Bomba":
                 sin_trabajo,
-            "Sin_Trabajo_Por_Area":
-                sin_trabajo_por_area,
-            "Compacidad_Carta":
-                compacidad_carta,
             "Perdida_Valvula_Viajera":
                 perdida_valvula,
             "Golpe_Fluido":

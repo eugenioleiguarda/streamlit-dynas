@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import io
+import json
 from math import ceil
 
 import numpy as np
@@ -73,6 +74,45 @@ def ejecutar_vfm(contenido: bytes):
 @st.cache_data(show_spinner=False)
 def ejecutar_controles(contenido: bytes | None):
     return leer_controles(contenido)
+
+
+def construir_tabla_analisis(salida, produccion_vfm, controles):
+    muestra_local = salida["muestra"].copy()
+    diagnosticos_local = salida["diagnosticos_cartas"].copy()
+    diagnosticos_local["Alertas_lista"] = (
+        diagnosticos_local["Alertas"].map(lista_alertas)
+    )
+
+    columnas_metadata = [
+        "CartaId",
+        "GPM",
+        "ProfundidadBomba",
+        "DiametroPistonBomba",
+    ]
+    tabla = diagnosticos_local.merge(
+        muestra_local[columnas_metadata],
+        on="CartaId",
+        how="left",
+        suffixes=("", "_API"),
+    )
+    tabla["Fecha_Dia"] = pd.to_datetime(
+        tabla["Fecha"],
+        errors="coerce",
+    ).dt.normalize()
+    comparacion = cruzar_controles(
+        produccion_vfm,
+        controles,
+    )
+    tabla = tabla.merge(
+        comparacion.drop(
+            columns=["Pozo_Clave"],
+            errors="ignore",
+        ),
+        on=["Pozo", "Fecha_Dia"],
+        how="left",
+        validate="many_to_one",
+    )
+    return tabla, comparacion
 
 
 def obtener_resultado(resultados, carta_id):
@@ -224,10 +264,14 @@ def tarjeta_vfm_control(
 st.title("Diagnóstico de cartas dinamométricas")
 st.caption("Exploración de oportunidades y alertas con reglas geométricas auditables")
 
-archivo = st.sidebar.file_uploader(
-    "Cargar respuesta JSON de la API",
+archivos = st.sidebar.file_uploader(
+    "Cargar uno o más JSON de la API",
     type=["json"],
-    help="El archivo puede contener una lista directa o un objeto con la colección items.",
+    accept_multiple_files=True,
+    help=(
+        "El último archivo seleccionado alimenta las pantallas actuales. "
+        "Todos los archivos se utilizan en Historial por pozo."
+    ),
 )
 
 archivo_controles = st.sidebar.file_uploader(
@@ -239,9 +283,49 @@ archivo_controles = st.sidebar.file_uploader(
     ),
 )
 
-if archivo is None:
-    st.info("Cargá el JSON de la API desde la barra lateral para iniciar el análisis.")
+if not archivos:
+    st.info("Cargá uno o más JSON de la API desde la barra lateral para iniciar el análisis.")
     st.stop()
+
+def fecha_maxima_archivo_json(archivo_cargado):
+    try:
+        contenido = json.loads(
+            archivo_cargado.getvalue().decode("utf-8-sig")
+        )
+        items = (
+            contenido.get("items", [])
+            if isinstance(contenido, dict)
+            else contenido
+        )
+        fechas = pd.to_datetime(
+            [
+                item.get("Fecha")
+                for item in items
+                if isinstance(item, dict)
+            ],
+            errors="coerce",
+        )
+        return fechas.max() if len(fechas) else pd.NaT
+    except Exception:
+        return pd.NaT
+
+
+# El JSON cronológicamente más reciente alimenta las pantallas
+# que ya existían, independientemente del orden de selección.
+fechas_archivos = [
+    fecha_maxima_archivo_json(a)
+    for a in archivos
+]
+indices_validos = [
+    i for i, fecha in enumerate(fechas_archivos)
+    if pd.notna(fecha)
+]
+indice_archivo_actual = (
+    max(indices_validos, key=lambda i: fechas_archivos[i])
+    if indices_validos
+    else len(archivos) - 1
+)
+archivo = archivos[indice_archivo_actual]
 
 try:
     with st.spinner("Procesando cartas y calculando producción VFM…"):
@@ -263,27 +347,89 @@ except Exception as exc:
 
 muestra = salida["muestra"].copy()
 resultados = salida["resultados_cartas"].copy()
-diagnosticos = salida["diagnosticos_cartas"].copy()
-diagnosticos["Alertas_lista"] = diagnosticos["Alertas"].map(lista_alertas)
-
-df = diagnosticos.merge(
-    muestra[["CartaId", "GPM", "ProfundidadBomba", "DiametroPistonBomba"]],
-    on="CartaId", how="left", suffixes=("", "_API"),
+df, comparacion_vfm = construir_tabla_analisis(
+    salida,
+    produccion_vfm,
+    controles,
 )
-df["Fecha_Dia"] = pd.to_datetime(
-    df["Fecha"],
-    errors="coerce",
-).dt.normalize()
-df = df.merge(
-    comparacion_vfm.drop(columns=["Pozo_Clave"], errors="ignore"),
-    on=["Pozo", "Fecha_Dia"],
-    how="left",
-    validate="many_to_one",
+
+# ============================================================
+# CONSOLIDACIÓN HISTÓRICA DE TODOS LOS JSON CARGADOS
+# ============================================================
+tablas_historicas = []
+vfm_historico_partes = []
+cartas_historicas = {}
+resultados_historicos = {}
+
+for indice_archivo, archivo_hist in enumerate(archivos):
+    try:
+        if indice_archivo == indice_archivo_actual:
+            salida_hist = salida
+            produccion_hist = produccion_vfm
+            tabla_hist = df.copy()
+        else:
+            salida_hist = ejecutar_pipeline(
+                archivo_hist.getvalue()
+            )
+            produccion_hist = ejecutar_vfm(
+                archivo_hist.getvalue()
+            )
+            tabla_hist, _ = construir_tabla_analisis(
+                salida_hist,
+                produccion_hist,
+                controles,
+            )
+
+        fechas_hist = pd.to_datetime(
+            tabla_hist["Fecha"],
+            errors="coerce",
+        )
+        fecha_referencia = fechas_hist.max()
+        tabla_hist["Archivo_Origen"] = archivo_hist.name
+        tabla_hist["Fecha_Referencia_JSON"] = fecha_referencia
+        tablas_historicas.append(tabla_hist)
+
+        vfm_parte = produccion_hist.copy()
+        vfm_parte["Archivo_Origen"] = archivo_hist.name
+        vfm_parte["Fecha_Referencia_JSON"] = fecha_referencia
+        vfm_historico_partes.append(vfm_parte)
+
+        for _, fila in salida_hist["muestra"].iterrows():
+            cartas_historicas[int(fila["CartaId"])] = fila
+        for _, fila in salida_hist["resultados_cartas"].iterrows():
+            resultados_historicos[int(fila["CartaId"])] = fila
+
+    except Exception as exc:
+        st.warning(
+            f"No se pudo incorporar {archivo_hist.name} "
+            f"al historial: {exc}"
+        )
+
+historico = (
+    pd.concat(tablas_historicas, ignore_index=True)
+    .sort_values(["Fecha", "Archivo_Origen"])
+    .drop_duplicates(subset=["CartaId"], keep="last")
+    .reset_index(drop=True)
+)
+vfm_historico = (
+    pd.concat(vfm_historico_partes, ignore_index=True)
+    .sort_values(["Fecha_Referencia_JSON", "Archivo_Origen"])
+    .drop_duplicates(
+        subset=["Pozo", "Fecha_Referencia_JSON"],
+        keep="last",
+    )
+    .reset_index(drop=True)
 )
 
 todos_principales = sorted(df["Diagnostico_Principal"].dropna().unique().tolist())
 todas_alertas = sorted({alerta for lista in df["Alertas_lista"] for alerta in lista})
 
+st.sidebar.success(
+    f"JSON actual: {archivo.name}"
+)
+st.sidebar.caption(
+    f"{len(archivos)} archivo(s) incorporados al historial"
+)
 st.sidebar.header("Filtros")
 filtro_principal = st.sidebar.multiselect("Diagnóstico principal", todos_principales)
 filtro_alertas = st.sidebar.multiselect("Cualquier alerta", todas_alertas)
@@ -307,8 +453,20 @@ if buscar.strip():
         | filtrado["CartaId"].astype(str).str.contains(q, regex=False)
     ]
 
-tab_resumen, tab_explorador, tab_detalle, tab_tabla = st.tabs(
-    ["Resumen", "Explorador", "Detalle", "Tabla operativa"]
+(
+    tab_resumen,
+    tab_explorador,
+    tab_detalle,
+    tab_historial,
+    tab_tabla,
+) = st.tabs(
+    [
+        "Resumen",
+        "Explorador",
+        "Detalle",
+        "Historial por pozo",
+        "Tabla operativa",
+    ]
 )
 
 with tab_resumen:
@@ -547,6 +705,172 @@ with tab_detalle:
                 st.write("**Evidencias:**")
                 for evidencia in lista_alertas(evidencias):
                     st.caption(f"• {evidencia}")
+
+with tab_historial:
+    st.subheader("Historial consolidado por pozo")
+    st.caption(
+        f"{len(archivos)} JSON cargados · "
+        f"{len(historico)} cartas únicas · "
+        "el análisis actual continúa usando únicamente el último JSON"
+    )
+
+    pozos_historicos = sorted(
+        historico["Pozo"].dropna().unique().tolist()
+    )
+    if not pozos_historicos:
+        st.warning("No hay pozos disponibles en los JSON cargados.")
+    else:
+        pozo_historial = st.selectbox(
+            "Seleccionar pozo",
+            pozos_historicos,
+            key="pozo_historial",
+        )
+        cartas_pozo = (
+            historico.loc[
+                historico["Pozo"] == pozo_historial
+            ]
+            .sort_values("Fecha")
+            .reset_index(drop=True)
+        )
+        vfm_pozo = (
+            vfm_historico.loc[
+                vfm_historico["Pozo"] == pozo_historial
+            ]
+            .sort_values("Fecha_Referencia_JSON")
+            .reset_index(drop=True)
+        )
+
+        h1, h2, h3 = st.columns(3)
+        h1.metric("Cartas encontradas", len(cartas_pozo))
+        h2.metric(
+            "JSON con VFM",
+            len(vfm_pozo),
+        )
+        h3.metric(
+            "Diagnósticos diferentes",
+            cartas_pozo["Diagnostico_Principal"].nunique(),
+        )
+
+        st.subheader("Evolución del Virtual Flow Meter")
+        if vfm_pozo.empty:
+            st.info("No hay predicciones VFM para este pozo.")
+        else:
+            fig_vfm = go.Figure()
+            fig_vfm.add_trace(go.Scatter(
+                x=vfm_pozo["Fecha_Referencia_JSON"],
+                y=vfm_pozo["VFM_Bruta_m3_d"],
+                mode="lines+markers",
+                name="Caudal bruto",
+                line=dict(color="#0874d1", width=3),
+            ))
+            fig_vfm.add_trace(go.Scatter(
+                x=vfm_pozo["Fecha_Referencia_JSON"],
+                y=vfm_pozo["VFM_Petroleo_m3_d"],
+                mode="lines+markers",
+                name="Petróleo neto",
+                line=dict(color="#16833b", width=3),
+            ))
+            fig_vfm.add_trace(go.Scatter(
+                x=vfm_pozo["Fecha_Referencia_JSON"],
+                y=vfm_pozo["VFM_Agua_pct"],
+                mode="lines+markers",
+                name="Corte de agua",
+                yaxis="y2",
+                line=dict(
+                    color="#e87918",
+                    width=2,
+                    dash="dot",
+                ),
+            ))
+            fig_vfm.update_layout(
+                height=430,
+                hovermode="x unified",
+                xaxis_title="Fecha de referencia del JSON",
+                yaxis=dict(title="Caudal [m³/d]"),
+                yaxis2=dict(
+                    title="Corte de agua [%]",
+                    overlaying="y",
+                    side="right",
+                    range=[0, 100],
+                ),
+                legend=dict(
+                    orientation="h",
+                    y=1.12,
+                    x=1,
+                    xanchor="right",
+                ),
+                margin=dict(l=40, r=50, t=60, b=40),
+                template="plotly_white",
+            )
+            st.plotly_chart(
+                fig_vfm,
+                use_container_width=True,
+            )
+
+        st.subheader("Cronología de diagnósticos")
+        columnas_cronologia = [
+            "Fecha",
+            "CartaId",
+            "Diagnostico_Principal",
+            "Alertas",
+            "VFM_Bruta_m3_d",
+            "VFM_Petroleo_m3_d",
+            "VFM_Agua_pct",
+            "Archivo_Origen",
+        ]
+        columnas_cronologia = [
+            c for c in columnas_cronologia
+            if c in cartas_pozo.columns
+        ]
+        st.dataframe(
+            tabla_exportable(
+                cartas_pozo[columnas_cronologia]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        st.subheader("Todas las cartas del pozo")
+        for inicio_hist in range(0, len(cartas_pozo), 2):
+            columnas_hist = st.columns(2)
+            lote = cartas_pozo.iloc[
+                inicio_hist: inicio_hist + 2
+            ]
+            for columna, (_, diag_hist) in zip(
+                columnas_hist,
+                lote.iterrows(),
+            ):
+                carta_id_hist = int(diag_hist["CartaId"])
+                carta_hist = cartas_historicas.get(
+                    carta_id_hist
+                )
+                resultado_hist = resultados_historicos.get(
+                    carta_id_hist
+                )
+                with columna:
+                    if carta_hist is not None:
+                        st.plotly_chart(
+                            figura_carta(
+                                carta_hist,
+                                resultado_hist,
+                                diag_hist,
+                                compacta=True,
+                            ),
+                            use_container_width=True,
+                        )
+                    st.caption(
+                        pd.to_datetime(
+                            diag_hist["Fecha"],
+                            errors="coerce",
+                        ).strftime("%d/%m/%Y %H:%M")
+                    )
+                    for alerta in diag_hist["Alertas_lista"]:
+                        st.caption(f"• {alerta}")
+                    st.caption(
+                        "VFM — "
+                        f"Bruta: {diag_hist.get('VFM_Bruta_m3_d', np.nan):.2f} m³/d · "
+                        f"Neta: {diag_hist.get('VFM_Petroleo_m3_d', np.nan):.2f} m³/d"
+                    )
 
 with tab_tabla:
     columnas_tabla = [
