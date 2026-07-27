@@ -3618,7 +3618,33 @@ def procesar_json(origen, silencioso=True):
             and llenado < 92.0
         )
 
+        # Algunas cartas devuelven el inicio apenas por encima
+        # del 100 % por la normalización geométrica. Se admite como
+        # compresión suave solamente si la transición tiene un ancho
+        # significativo y su forma es suave. Esto excluye saltos
+        # degenerados muy angostos en el extremo derecho.
+        transferencia_progresiva_tardia = bool(
+            horizontales_ok
+            and np.isfinite(inicio_transferencia_derecha)
+            and np.isfinite(ancho_transferencia_20_80)
+            and np.isfinite(pendiente_transferencia)
+            and np.isfinite(curvatura_transferencia)
+            and np.isfinite(vacio_sd)
+            and np.isfinite(vacio_id)
+            and np.isfinite(llenado)
+            and inicio_transferencia_derecha >= 97.0
+            and ancho_transferencia_20_80 >= 8.0
+            and ancho_transferencia_20_80 <= 40.0
+            and pendiente_transferencia < 4.0
+            and curvatura_transferencia < 18.0
+            and vacio_sd >= 4.0
+            and vacio_id >= 25.0
+            and llenado < 92.0
+        )
+
         if transferencia_progresiva_inferida:
+            transferencia_progresiva = True
+        if transferencia_progresiva_tardia:
             transferencia_progresiva = True
 
         if hay_indicio_admision:
@@ -3649,7 +3675,12 @@ def procesar_json(origen, silencioso=True):
                         "Posible compresión/interferencia de gas suave"
                     )
 
-                    if transferencia_progresiva_inferida:
+                    if transferencia_progresiva_tardia:
+                        evidencias.append(
+                            "Vacíos derechos moderados y "
+                            "transferencia tardía de forma suave"
+                        )
+                    elif transferencia_progresiva_inferida:
                         evidencias.append(
                             "Vacíos derechos moderados; "
                             "transferencia no mensurable e "
