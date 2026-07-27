@@ -30,7 +30,7 @@ COLORES = {
     "Exceso de carga estructural": "#991b1b",
     "Exceso de torque": "#dc2626",
     "Posible pozo subexplotado": "#16833b",
-    "Posible sin trabajo de bomba": "#111827",
+    "Posible sin trabajo de bomba": "#f59e0b",
     "Carta no válida - posible falla de medición o transmisión": "#b91c1c",
     "Posible golpe de fluido": "#e87918",
     "Posible compresión/interferencia de gas": "#2563eb",
