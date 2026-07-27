@@ -3828,7 +3828,6 @@ def procesar_json(origen, silencioso=True):
             and inicio_transferencia_derecha >= 97.0
             and ancho_transferencia_20_80 >= 8.0
             and pendiente_transferencia < 4.0
-            and curvatura_transferencia < 18.0
             and vacio_sd >= 4.0
             and vacio_id >= 25.0
             and llenado < 92.0
