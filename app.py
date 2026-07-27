@@ -917,6 +917,12 @@ with tab_historial:
                                 compacta=True,
                             ),
                             use_container_width=True,
+                            key=(
+                                f"historial_carta_"
+                                f"{pozo_historial}_"
+                                f"{carta_id_hist}_"
+                                f"{inicio_hist}"
+                            ),
                         )
                     st.caption(
                         pd.to_datetime(
