@@ -3639,6 +3639,23 @@ def procesar_json(origen, silencioso=True):
         # 2. PÉRDIDA EN VÁLVULA VIAJERA
         # --------------------------------------------------------
 
+        vacios_superiores_valvula = bool(
+            np.isfinite(vacio_si)
+            and np.isfinite(vacio_sd)
+            and (
+                (
+                    vacio_si
+                        >= UMBRAL_VACIO_SUP_IZQ_VALVULA
+                    and vacio_sd
+                        >= UMBRAL_VACIO_SUP_DER_VALVULA
+                )
+                or (
+                    vacio_si >= 12.0
+                    and vacio_sd >= 10.0
+                )
+            )
+        )
+
         perdida_valvula = (
             horizontales_ok
             and np.isfinite(vacio_si)
@@ -3650,10 +3667,7 @@ def procesar_json(origen, silencioso=True):
             and np.isfinite(
                 angulo_ideal_derecho
             )
-            and vacio_si
-                >= UMBRAL_VACIO_SUP_IZQ_VALVULA
-            and vacio_sd
-                >= UMBRAL_VACIO_SUP_DER_VALVULA
+            and vacios_superiores_valvula
             and vacio_id
                 < UMBRAL_VACIO_INF_DER_VALVULA
             and angulo_ideal_izquierdo < 90.0
@@ -4188,9 +4202,9 @@ def procesar_json(origen, silencioso=True):
             accion = "Revisar condición y anclaje del tubing"
             confianza = 0.68
         else:
-            diagnostico_principal = "Sin diagnóstico automático"
-            accion = "Revisión visual"
-            confianza = 0.30
+            diagnostico_principal = "Pozo bien explotado"
+            accion = "Mantener seguimiento operativo"
+            confianza = 0.60
 
         filas_diagnosticos.append({
             "CartaId": carta_id,

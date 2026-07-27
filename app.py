@@ -38,6 +38,7 @@ COLORES = {
     "Posible pérdida en válvula viajera": "#8b5cf6",
     "Posible golpe de bomba": "#e11d48",
     "Posible tubing libre": "#795548",
+    "Pozo bien explotado": "#14b8a6",
     "Sin diagnóstico automático": "#6b7280",
 }
 
@@ -174,7 +175,7 @@ def obtener_resultado(resultados, carta_id):
 def figura_carta(carta, resultado, diagnostico, compacta=False):
     x = a_array(carta["Fondo_Posiciones"])
     y = a_array(carta["Fondo_Cargas"])
-    principal = diagnostico.get("Diagnostico_Principal", "Sin diagnóstico automático")
+    principal = diagnostico.get("Diagnostico_Principal", "Pozo bien explotado")
     color = COLORES.get(principal, "#374151")
 
     fig = go.Figure()
