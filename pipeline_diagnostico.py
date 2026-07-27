@@ -4110,6 +4110,31 @@ def procesar_json(origen, silencioso=True):
         # DIAGNÓSTICO PRINCIPAL
         # --------------------------------------------------------
 
+        # Una carta geométricamente inválida no admite diagnósticos
+        # adicionales. También se eliminan alertas operativas que,
+        # aunque provengan de otros campos de la API, podrían inducir
+        # a interpretar como confiable una adquisición corrupta.
+        if carta_no_valida:
+            alertas = [
+                "Carta no válida - posible falla de medición o transmisión"
+            ]
+            evidencias = list(
+                resultado.get(
+                    "Evidencias_Integridad",
+                    [],
+                )
+            )
+            exceso_torque = False
+            exceso_carga_estructural = False
+            sin_trabajo = False
+            perdida_valvula = False
+            golpe_fluido = False
+            compresion_gas = False
+            compresion_gas_suave = False
+            golpe_bomba = False
+            tubing_libre = False
+            subexplotado = False
+
         # El exceso de torque y el exceso de carga estructural
         # permanecen como alertas operativas. No reemplazan el
         # diagnóstico dinamométrico principal de la carta.

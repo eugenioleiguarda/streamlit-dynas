@@ -77,6 +77,56 @@ def ejecutar_controles(contenido: bytes | None):
     return leer_controles(contenido)
 
 
+def excluir_vfm_sin_integridad(salida, produccion_vfm):
+    """
+    Excluye del VFM los pozos-día cuyas cartas son todas inválidas.
+
+    Si existieran varias cartas del mismo pozo y día, el VFM se conserva
+    cuando al menos una de ellas superó la validación geométrica.
+    """
+    if produccion_vfm is None or produccion_vfm.empty:
+        return produccion_vfm
+
+    diagnosticos = salida["diagnosticos_cartas"].copy()
+    if "Carta_No_Valida" not in diagnosticos.columns:
+        return produccion_vfm
+
+    diagnosticos["Fecha_Dia"] = pd.to_datetime(
+        diagnosticos["Fecha"],
+        errors="coerce",
+    ).dt.normalize()
+    diagnosticos["Carta_Valida_Para_VFM"] = ~(
+        diagnosticos["Carta_No_Valida"].fillna(False)
+    )
+
+    integridad_diaria = (
+        diagnosticos
+        .groupby(
+            ["Pozo", "Fecha_Dia"],
+            dropna=False,
+        )["Carta_Valida_Para_VFM"]
+        .any()
+        .rename("Hay_Carta_Valida_Para_VFM")
+        .reset_index()
+    )
+
+    salida_vfm = produccion_vfm.merge(
+        integridad_diaria,
+        on=["Pozo", "Fecha_Dia"],
+        how="left",
+    )
+    salida_vfm = salida_vfm.loc[
+        salida_vfm[
+            "Hay_Carta_Valida_Para_VFM"
+        ].fillna(False)
+    ].copy()
+
+    return salida_vfm.drop(
+        columns=["Hay_Carta_Valida_Para_VFM"],
+        errors="ignore",
+    )
+
+
 def construir_tabla_analisis(salida, produccion_vfm, controles):
     muestra_local = salida["muestra"].copy()
     diagnosticos_local = salida["diagnosticos_cartas"].copy()
@@ -332,6 +382,10 @@ try:
     with st.spinner("Procesando cartas y calculando producción VFM…"):
         salida = ejecutar_pipeline(archivo.getvalue())
         produccion_vfm = ejecutar_vfm(archivo.getvalue())
+        produccion_vfm = excluir_vfm_sin_integridad(
+            salida,
+            produccion_vfm,
+        )
         controles = ejecutar_controles(
             archivo_controles.getvalue()
             if archivo_controles is not None
@@ -374,6 +428,10 @@ for indice_archivo, archivo_hist in enumerate(archivos):
             )
             produccion_hist = ejecutar_vfm(
                 archivo_hist.getvalue()
+            )
+            produccion_hist = excluir_vfm_sin_integridad(
+                salida_hist,
+                produccion_hist,
             )
             tabla_hist, _ = construir_tabla_analisis(
                 salida_hist,
