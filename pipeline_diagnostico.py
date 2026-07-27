@@ -1020,6 +1020,154 @@ def procesar_json(origen, silencioso=True):
         return float(abs(pendiente) * np.ptp(x) / max(rango_y_total, 1e-9))
 
 
+    def _segmentos_se_intersectan(a, b, c, d, tolerancia=1e-10):
+        """Detecta un cruce propio entre dos segmentos no adyacentes."""
+        def orientacion(p, q, r):
+            return (
+                (q[0] - p[0]) * (r[1] - p[1])
+                - (q[1] - p[1]) * (r[0] - p[0])
+            )
+
+        o1 = orientacion(a, b, c)
+        o2 = orientacion(a, b, d)
+        o3 = orientacion(c, d, a)
+        o4 = orientacion(c, d, b)
+
+        # Solo contamos cruces claros. Los contactos colineales o en
+        # extremos pueden aparecer legítimamente al cerrar la carta.
+        return bool(
+            o1 * o2 < -tolerancia
+            and o3 * o4 < -tolerancia
+        )
+
+
+    def evaluar_integridad_geometrica(posicion, carga, peso_api=np.nan):
+        """
+        Valida que el orden de adquisición represente un ciclo físico.
+
+        La compacidad o el área pequeña NO invalidan una carta: una bomba
+        bloqueada puede producir un contorno muy fino pero perfectamente
+        continuo. Aquí se buscan únicamente desorden, discontinuidades y
+        cruces incompatibles con un recorrido físico.
+        """
+        x = np.asarray(posicion, dtype=float)
+        y = np.asarray(carga, dtype=float)
+
+        resultado_base = {
+            "valida": True,
+            "evidencias": [],
+            "saltos_grandes": 0,
+            "reversiones_posicion": 0,
+            "cruces_propios": 0,
+            "rango_carga_sobre_peso_api": np.nan,
+        }
+
+        if (
+            len(x) < 10
+            or len(x) != len(y)
+            or not np.isfinite(x).all()
+            or not np.isfinite(y).all()
+        ):
+            resultado_base.update({
+                "valida": False,
+                "evidencias": ["SERIE_INCOMPLETA_O_NO_FINITA"],
+            })
+            return resultado_base
+
+        rango_x = float(np.ptp(x))
+        rango_y = float(np.ptp(y))
+        if rango_x <= 0 or rango_y <= 0:
+            resultado_base.update({
+                "valida": False,
+                "evidencias": ["RECORRIDO_O_CARGA_SIN_RANGO"],
+            })
+            return resultado_base
+
+        # Saltos bidimensionales normalizados. Una carta normal puede
+        # presentar uno o dos cambios rápidos en sus extremos; exigimos
+        # varios saltos grandes para considerarla corrupta.
+        pasos = np.hypot(
+            np.diff(x) / rango_x,
+            np.diff(y) / rango_y,
+        )
+        saltos_grandes = int(np.sum(pasos > 0.45))
+
+        # Inversiones significativas del sentido de posición después de
+        # un suavizado corto. Un ciclo normal tiene esencialmente una ida
+        # y una vuelta; se toleran pequeñas oscilaciones y puntos repetidos.
+        ventana = 5 if len(x) >= 15 else 3
+        nucleo = np.ones(ventana, dtype=float) / ventana
+        x_suave = np.convolve(x, nucleo, mode="same")
+        margen = 0.025 * rango_x
+        dx = np.diff(x_suave)
+        signos = np.sign(dx[np.abs(dx) > margen])
+        reversiones = int(
+            np.sum(signos[1:] != signos[:-1])
+        ) if len(signos) > 1 else 0
+
+        # Cruces propios del contorno. Se excluyen segmentos vecinos y
+        # el par formado por el primero y el último.
+        puntos = np.column_stack([
+            (x - np.nanmin(x)) / rango_x,
+            (y - np.nanmin(y)) / rango_y,
+        ])
+        cruces = 0
+        cantidad_segmentos = len(puntos) - 1
+        for i in range(cantidad_segmentos):
+            for j in range(i + 2, cantidad_segmentos):
+                if i == 0 and j == cantidad_segmentos - 1:
+                    continue
+                if _segmentos_se_intersectan(
+                    puntos[i],
+                    puntos[i + 1],
+                    puntos[j],
+                    puntos[j + 1],
+                ):
+                    cruces += 1
+
+        ratio_escala = (
+            rango_y / float(peso_api)
+            if np.isfinite(peso_api) and peso_api > 0
+            else np.nan
+        )
+
+        evidencias = []
+        indicadores_moderados = 0
+
+        if saltos_grandes >= 4:
+            evidencias.append("MULTIPLES_SALTOS_ENTRE_PUNTOS")
+            indicadores_moderados += 1
+        if reversiones >= 5:
+            evidencias.append("DEMASIADAS_INVERSIONES_DE_POSICION")
+            indicadores_moderados += 1
+        if cruces >= 4:
+            evidencias.append("MULTIPLES_CRUCES_DEL_CONTORNO")
+            indicadores_moderados += 1
+        if np.isfinite(ratio_escala) and ratio_escala > 8.0:
+            evidencias.append("RANGO_CARGA_INCOMPATIBLE_CON_PESO_API")
+            # Se conserva para auditoría, pero no invalida la carta:
+            # el propio peso informado por la API puede ser anómalo.
+
+        # Un indicador extremadamente marcado alcanza por sí solo.
+        # Para señales moderadas exigimos concurrencia, reduciendo falsos
+        # positivos sobre cartas reales complejas pero físicamente válidas.
+        invalida = bool(
+            saltos_grandes >= 6
+            or reversiones >= 8
+            or cruces >= 8
+            or indicadores_moderados >= 2
+        )
+
+        return {
+            "valida": not invalida,
+            "evidencias": evidencias,
+            "saltos_grandes": saltos_grandes,
+            "reversiones_posicion": reversiones,
+            "cruces_propios": cruces,
+            "rango_carga_sobre_peso_api": ratio_escala,
+        }
+
+
     def evaluar_horizontales(
         posicion, carga, asc, desc, linea_asc, linea_desc,
         peso_api, llenado_api,
@@ -1087,8 +1235,13 @@ def procesar_json(origen, silencioso=True):
                 posicion, carga, asc, desc, linea_asc, linea_desc,
                 peso_api, llenado_api,
             )
+            integridad = evaluar_integridad_geometrica(
+                posicion,
+                carga,
+                peso_api,
+            )
 
-            if calidad["confiables"]:
+            if calidad["confiables"] and integridad["valida"]:
                 calculo = calcular_llenado_bomba(
                     posicion, carga, asc, desc, linea_asc, linea_desc,
                     fraccion_banda=0.35,
@@ -1108,7 +1261,19 @@ def procesar_json(origen, silencioso=True):
                 "Carrera_Fondo_pulg": float(np.ptp(posicion)),
                 "Estado_Horizontales": calidad["estado"],
                 "Evidencias_Horizontales": calidad["evidencias"],
-                "Posible_Sin_Trabajo_Bomba": not calidad["confiables"],
+                "Posible_Sin_Trabajo_Bomba": (
+                    not calidad["confiables"]
+                    and integridad["valida"]
+                ),
+                "Carta_Geometricamente_Valida": integridad["valida"],
+                "Posible_Carta_No_Valida": not integridad["valida"],
+                "Evidencias_Integridad": integridad["evidencias"],
+                "Saltos_Grandes_Carta": integridad["saltos_grandes"],
+                "Reversiones_Posicion_Carta": integridad["reversiones_posicion"],
+                "Cruces_Propios_Carta": integridad["cruces_propios"],
+                "Rango_Carga_Sobre_Peso_API": (
+                    integridad["rango_carga_sobre_peso_api"]
+                ),
                 "Compacidad_Carta": calidad["compacidad_carta"],
                 "Separacion_Sobre_Peso_API": calidad["ratio_gap_api"],
                 "Pendiente_Relativa_Superior": calidad["pendiente_relativa_superior"],
@@ -1351,6 +1516,9 @@ def procesar_json(origen, silencioso=True):
         ].eq(
             "HORIZONTALES_OK"
         )
+        & resultados_cartas[
+            "Carta_Geometricamente_Valida"
+        ].fillna(False)
         & (
             resultados_cartas[
                 "Compacidad_Carta"
@@ -3380,10 +3548,33 @@ def procesar_json(origen, silencioso=True):
             )
 
         # --------------------------------------------------------
-        # 1. SIN TRABAJO DE BOMBA
+        # 1. INTEGRIDAD GEOMÉTRICA Y SIN TRABAJO DE BOMBA
         # --------------------------------------------------------
 
+        carta_no_valida = bool(
+            resultado.get(
+                "Posible_Carta_No_Valida",
+                False,
+            )
+        )
+
+        if carta_no_valida:
+            alertas.append(
+                "Carta no válida - posible falla de medición o transmisión"
+            )
+
+            evidencias.extend(
+                list(
+                    resultado.get(
+                        "Evidencias_Integridad",
+                        [],
+                    )
+                )
+            )
+
         sin_trabajo = bool(
+            not carta_no_valida
+            and
             resultado[
                 "Posible_Sin_Trabajo_Bomba"
             ]
@@ -3400,6 +3591,8 @@ def procesar_json(origen, silencioso=True):
 
         # Las siguientes reglas necesitan carta ideal válida.
         horizontales_ok = (
+            not carta_no_valida
+            and
             resultado[
                 "Estado_Horizontales"
             ]
@@ -3920,7 +4113,16 @@ def procesar_json(origen, silencioso=True):
         # El exceso de torque y el exceso de carga estructural
         # permanecen como alertas operativas. No reemplazan el
         # diagnóstico dinamométrico principal de la carta.
-        if subexplotado:
+        if carta_no_valida:
+            diagnostico_principal = (
+                "Carta no válida - posible falla de medición o transmisión"
+            )
+            accion = (
+                "Revisar celda de carga, sensor de posición, "
+                "sincronización y transmisión de datos"
+            )
+            confianza = 0.92
+        elif subexplotado:
             diagnostico_principal = "Posible pozo subexplotado"
             accion = "Evaluar aumento de régimen y revisar alertas secundarias"
             confianza = 0.72
@@ -3989,6 +4191,33 @@ def procesar_json(origen, silencioso=True):
                 exceso_carga_estructural,
             "Carga_Estructural_pct":
                 carga_estructural_pct,
+            "Carta_No_Valida":
+                carta_no_valida,
+            "Evidencias_Integridad":
+                resultado.get(
+                    "Evidencias_Integridad",
+                    [],
+                ),
+            "Saltos_Grandes_Carta":
+                resultado.get(
+                    "Saltos_Grandes_Carta",
+                    np.nan,
+                ),
+            "Reversiones_Posicion_Carta":
+                resultado.get(
+                    "Reversiones_Posicion_Carta",
+                    np.nan,
+                ),
+            "Cruces_Propios_Carta":
+                resultado.get(
+                    "Cruces_Propios_Carta",
+                    np.nan,
+                ),
+            "Rango_Carga_Sobre_Peso_API":
+                resultado.get(
+                    "Rango_Carga_Sobre_Peso_API",
+                    np.nan,
+                ),
             "Sin_Trabajo_Bomba":
                 sin_trabajo,
             "Perdida_Valvula_Viajera":

@@ -31,6 +31,7 @@ COLORES = {
     "Exceso de torque": "#dc2626",
     "Posible pozo subexplotado": "#16833b",
     "Posible sin trabajo de bomba": "#111827",
+    "Carta no válida - posible falla de medición o transmisión": "#b91c1c",
     "Posible golpe de fluido": "#e87918",
     "Posible compresión/interferencia de gas": "#2563eb",
     "Posible compresión/interferencia de gas suave": "#4f7fe5",
