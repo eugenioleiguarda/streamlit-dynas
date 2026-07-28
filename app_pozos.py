@@ -276,12 +276,10 @@ def diagnostico_consolidado(cartas_ultimas):
     if cartas_ultimas.empty:
         return "Sin cartas", "No hay información suficiente.", False
 
-    exclusiones = {"Pozo bien explotado"}
     conteos = {}
     for lista in cartas_ultimas["Diagnosticos_Todos"]:
         for diagnostico in set(lista):
-            if diagnostico not in exclusiones:
-                conteos[diagnostico] = conteos.get(diagnostico, 0) + 1
+            conteos[diagnostico] = conteos.get(diagnostico, 0) + 1
 
     robustos = sorted(
         [(d, n) for d, n in conteos.items() if n >= 3],
@@ -307,12 +305,12 @@ def diagnostico_consolidado(cartas_ultimas):
     if variable:
         return (
             "Comportamiento variable",
-            "No hay una anomalía repetida en 3 cartas y existe variación entre mediciones.",
+            "No hay un diagnóstico repetido en 3 cartas y existe variación entre mediciones.",
             True,
         )
     return (
         "Sin diagnóstico robusto",
-        "Ninguna anomalía aparece en al menos 3 de las cartas analizadas.",
+        "Ningún diagnóstico aparece en al menos 3 de las cartas analizadas.",
         False,
     )
 
@@ -328,8 +326,7 @@ def tabla_diagnosticos_robustos(historico):
         conteos = {}
         for lista in ultimas["Diagnosticos_Todos"]:
             for diagnostico in set(lista_alertas(lista)):
-                if diagnostico != "Pozo bien explotado":
-                    conteos[diagnostico] = conteos.get(diagnostico, 0) + 1
+                conteos[diagnostico] = conteos.get(diagnostico, 0) + 1
         robustos = sorted(
             diagnostico
             for diagnostico, cantidad in conteos.items()
@@ -520,8 +517,7 @@ def construir_exportacion_pozos(cartas):
         conteos = {}
         for diagnosticos in ultimas_cinco["Diagnosticos_Todos"]:
             for diagnostico in set(lista_alertas(diagnosticos)):
-                if diagnostico != "Pozo bien explotado":
-                    conteos[diagnostico] = conteos.get(diagnostico, 0) + 1
+                conteos[diagnostico] = conteos.get(diagnostico, 0) + 1
 
         robustos = sorted(
             (
