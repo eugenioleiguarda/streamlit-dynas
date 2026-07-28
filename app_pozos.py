@@ -130,21 +130,12 @@ def construir_tabla_cartas(salida, produccion, controles):
         axis=1,
     )
 
-    metadata_posible = [
-        "CartaId",
-        "GPM",
-        "ProfundidadBomba",
-        "DiametroPistonBomba",
-        "CarreraMaximaBomba",
-        "CarreraMinimaBomba",
-        "CarreraEfectivaBombaInicio",
-        "CarreraEfectivaBombaFin",
-        "CarreraMaximaSuperficie",
-        "CarreraMinimaSuperficie",
-    ]
-    metadata = [c for c in metadata_posible if c in muestra.columns]
+    # Se conserva toda la información original de la API. La interfaz usa
+    # solamente algunas columnas, pero la descarga debe poder auditar todos
+    # los datos de entrada y todos los resultados calculados.
+    metadata = muestra.drop_duplicates("CartaId").copy()
     tabla = diagnosticos.merge(
-        muestra[metadata],
+        metadata,
         on="CartaId",
         how="left",
         suffixes=("", "_API"),
@@ -362,6 +353,194 @@ def preparar_csv_descarga(tabla):
                 else valor
             )
     return salida
+
+
+ACCIONES_POR_DIAGNOSTICO = {
+    "Posible pozo subexplotado":
+        "Evaluar aumento de régimen y revisar alertas secundarias",
+    "Posible sin trabajo de bomba":
+        "Revisar bomba, sarta y carta de superficie",
+    "Carta no válida - posible falla de medición o transmisión":
+        "Revisar celda de carga, adquisición y transmisión de datos",
+    "Posible golpe de fluido":
+        "Evaluar disminución de régimen",
+    "Posible compresión/interferencia de gas":
+        "Evaluar condición de admisión y revisar régimen",
+    "Posible compresión/interferencia de gas suave":
+        "Evaluar condición de admisión y revisar régimen",
+    "Posible pérdida en válvula viajera":
+        "Revisar válvula viajera",
+    "Posible golpe de bomba":
+        "Revisar espaciamiento",
+    "Posible tubing libre":
+        "Revisar condición y anclaje del tubing",
+    "Exceso de torque":
+        "Revisar balanceo, régimen y capacidad de la caja reductora",
+    "Exceso de carga estructural":
+        "Revisar carga admisible de la unidad y condición estructural",
+    "Pozo bien explotado":
+        "Mantener seguimiento operativo",
+}
+
+
+def texto_lista(valor):
+    elementos = lista_alertas(valor)
+    return " | ".join(str(x) for x in elementos)
+
+
+def construir_exportacion_cartas(cartas):
+    salida = cartas.copy()
+    salida["Diagnosticos_Todos_Texto"] = salida[
+        "Diagnosticos_Todos"
+    ].map(texto_lista)
+    salida["Alertas_Secundarias_Texto"] = salida.apply(
+        lambda fila: " | ".join(
+            diagnostico
+            for diagnostico in lista_alertas(fila.get("Alertas_lista"))
+            if diagnostico != str(fila.get("Diagnostico_Principal"))
+        ),
+        axis=1,
+    )
+    if "Evidencias" in salida.columns:
+        salida["Evidencias_Texto"] = salida["Evidencias"].map(texto_lista)
+
+    salida["Carrera_Fondo_Carta_pulg"] = salida["CartaId"].map(
+        lambda carta_id: carrera_fondo_carta(
+            cartas_por_id.get(int(carta_id), {})
+        )
+    )
+    salida["Carrera_Superficie_API_pulg"] = salida.apply(
+        carrera_superficie,
+        axis=1,
+    )
+
+    preferidas = [
+        "CartaId",
+        "Pozo",
+        "Fecha",
+        "Diagnostico_Principal",
+        "Diagnosticos_Todos_Texto",
+        "Alertas_Secundarias_Texto",
+        "Accion_Sugerida",
+        "Confianza",
+        "Evidencias_Texto",
+        "Carta_No_Valida",
+        "Sin_Trabajo_Bomba",
+        "Perdida_Valvula_Viajera",
+        "Golpe_Fluido",
+        "Compresion_Gas",
+        "Compresion_Gas_Suave",
+        "Golpe_Bomba",
+        "Tubing_Libre",
+        "Pozo_Subexplotado",
+        "Exceso_Torque",
+        "Exceso_Carga_Estructural",
+        "Llenado_Bruto_pct",
+        "Llenado_Original_pct",
+        "Llenado_Operativo_pct",
+        "Sumergencia_Relativa_pct",
+        "Torque_Reductor_pct",
+        "Carga_Estructural_pct",
+        "GPM",
+        "Carrera_Fondo_Carta_pulg",
+        "Carrera_Superficie_API_pulg",
+        "ProfundidadBomba",
+        "DiametroPistonBomba",
+        "VFM_Bruta_m3_d",
+        "VFM_Petroleo_m3_d",
+        "VFM_Agua_pct",
+        "Control_Bruta_m3_d",
+        "Control_Petroleo_m3_d",
+        "Control_Agua_pct",
+        "Comentario_VFM_Control",
+    ]
+    preferidas = [c for c in preferidas if c in salida.columns]
+    restantes = [c for c in salida.columns if c not in preferidas]
+    return salida[preferidas + restantes]
+
+
+def construir_exportacion_pozos(cartas):
+    filas = []
+    for pozo, grupo in cartas.groupby("Pozo", sort=True):
+        grupo = grupo.sort_values("Fecha", ascending=False)
+        ultimas_cinco = grupo.head(5)
+        ultima = grupo.iloc[0]
+
+        conteos = {}
+        for diagnosticos in ultimas_cinco["Diagnosticos_Todos"]:
+            for diagnostico in set(lista_alertas(diagnosticos)):
+                if diagnostico != "Pozo bien explotado":
+                    conteos[diagnostico] = conteos.get(diagnostico, 0) + 1
+
+        robustos = sorted(
+            (
+                (diagnostico, cantidad)
+                for diagnostico, cantidad in conteos.items()
+                if cantidad >= 3
+            ),
+            key=lambda item: (-item[1], item[0]),
+        )
+        diagnosticos_robustos = " | ".join(
+            f"{diagnostico} ({cantidad}/{len(ultimas_cinco)})"
+            for diagnostico, cantidad in robustos
+        )
+        acciones_robustas = " | ".join(dict.fromkeys(
+            ACCIONES_POR_DIAGNOSTICO.get(
+                diagnostico,
+                "Revisión operativa",
+            )
+            for diagnostico, _ in robustos
+        ))
+
+        fila = {
+            "Pozo": pozo,
+            "Cantidad_Cartas": int(len(grupo)),
+            "Cartas_Analizadas_Robustez": int(len(ultimas_cinco)),
+            "Fecha_Ultima_Carta": ultima.get("Fecha"),
+            "Tiene_Diagnostico_Robusto": bool(robustos),
+            "Diagnosticos_Robustos": (
+                diagnosticos_robustos
+                if robustos
+                else "Sin diagnóstico robusto"
+            ),
+            "Acciones_Diagnosticos_Robustos": (
+                acciones_robustas
+                if robustos
+                else "Mantener seguimiento y revisar variabilidad"
+            ),
+            "Diagnostico_Ultima_Carta": ultima.get(
+                "Diagnostico_Principal"
+            ),
+            "Diagnosticos_Todos_Ultima_Carta": texto_lista(
+                ultima.get("Diagnosticos_Todos")
+            ),
+            "Accion_Ultima_Carta": ultima.get("Accion_Sugerida"),
+        }
+
+        campos_ultima = [
+            "GPM",
+            "ProfundidadBomba",
+            "DiametroPistonBomba",
+            "Llenado_Operativo_pct",
+            "Sumergencia_Relativa_pct",
+            "Torque_Reductor_pct",
+            "Carga_Estructural_pct",
+            "VFM_Bruta_m3_d",
+            "VFM_Petroleo_m3_d",
+            "VFM_Agua_pct",
+            "Control_Bruta_m3_d",
+            "Control_Petroleo_m3_d",
+            "Control_Agua_pct",
+            "Comentario_VFM_Control",
+        ]
+        for campo in campos_ultima:
+            if campo in grupo.columns:
+                fila[campo] = ultima.get(campo)
+
+        fila["Carrera_Superficie_API_pulg"] = carrera_superficie(ultima)
+        filas.append(fila)
+
+    return pd.DataFrame(filas)
 
 
 st.title("Diagnóstico de pozos y evolución de cartas")
@@ -778,16 +957,17 @@ with tab_descargas:
         "incluye todas las cartas de los pozos seleccionados."
     )
 
-    csv_cartas = preparar_csv_descarga(cartas_filtradas).to_csv(
+    exportacion_cartas = construir_exportacion_cartas(
+        cartas_filtradas
+    )
+    csv_cartas = preparar_csv_descarga(exportacion_cartas).to_csv(
         index=False,
         sep=";",
         decimal=",",
     ).encode("utf-8-sig")
 
-    resumen_pozos = (
-        cartas_filtradas.sort_values("Fecha")
-        .drop_duplicates("Pozo", keep="last")
-        .copy()
+    resumen_pozos = construir_exportacion_pozos(
+        cartas_filtradas
     )
     csv_pozos = preparar_csv_descarga(resumen_pozos).to_csv(
         index=False,
