@@ -24,7 +24,7 @@ st.set_page_config(
     layout="wide",
 )
 
-PIPELINE_CACHE_VERSION = "2026-07-28-integridad-escala-v2"
+PIPELINE_CACHE_VERSION = "2026-07-28-integridad-escala-v3"
 
 COLORES = {
     "Posible pozo subexplotado": "#16833b",
@@ -157,6 +157,41 @@ def construir_tabla_cartas(salida, produccion, controles):
         how="left",
         validate="many_to_one",
     )
+
+    # El VFM puede existir para el mismo pozo-día porque otra carta del
+    # grupo fue válida. Sin embargo, no debe asociarse visualmente a una
+    # carta individual cuya geometría fue declarada inválida.
+    if "Carta_No_Valida" in tabla.columns:
+        mascara_invalida = tabla["Carta_No_Valida"].fillna(False)
+        columnas_vfm_carta = [
+            "VFM_Num_Cartas_Dia",
+            "VFM_Bruta_m3_d",
+            "VFM_Petroleo_m3_d",
+            "VFM_Agua_pct",
+            "VFM_Bruta_Via_Residuo_m3_d",
+            "VFM_Petroleo_Via_Agua_m3_d",
+            "Delta_Bruta_m3_d",
+            "Error_Bruta_pct",
+            "Delta_Petroleo_m3_d",
+            "Error_Petroleo_pct",
+            "Delta_Agua_pp",
+        ]
+        columnas_vfm_carta = [
+            c for c in columnas_vfm_carta
+            if c in tabla.columns
+        ]
+        tabla.loc[
+            mascara_invalida,
+            columnas_vfm_carta,
+        ] = np.nan
+        if "Comentario_VFM_Control" in tabla.columns:
+            tabla.loc[
+                mascara_invalida,
+                "Comentario_VFM_Control",
+            ] = (
+                "VFM no informado: carta no válida."
+            )
+
     return tabla
 
 
