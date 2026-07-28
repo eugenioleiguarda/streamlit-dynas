@@ -3816,6 +3816,11 @@ def procesar_json(origen, silencioso=True):
 
     filas_diagnosticos = []
 
+    # Área encerrada respecto del rectángulo envolvente de la carta.
+    # Por debajo de este valor, ambas carreras recorren prácticamente
+    # la misma trayectoria y se considera posible falta de trabajo.
+    UMBRAL_COMPACIDAD_SIN_TRABAJO = 0.13
+
 
     for _, metrica in metricas_cartas.iterrows():
         carta_id = int(
@@ -3898,12 +3903,29 @@ def procesar_json(origen, silencioso=True):
                 )
             )
 
+        compacidad_carta = pd.to_numeric(
+            resultado.get(
+                "Compacidad_Carta",
+                np.nan,
+            ),
+            errors="coerce",
+        )
+
+        sin_trabajo_por_area = bool(
+            not carta_no_valida
+            and np.isfinite(compacidad_carta)
+            and compacidad_carta
+                <= UMBRAL_COMPACIDAD_SIN_TRABAJO
+        )
+
         sin_trabajo = bool(
             not carta_no_valida
-            and
-            resultado[
-                "Posible_Sin_Trabajo_Bomba"
-            ]
+            and (
+                resultado[
+                    "Posible_Sin_Trabajo_Bomba"
+                ]
+                or sin_trabajo_por_area
+            )
         )
 
         if sin_trabajo:
@@ -3911,9 +3933,16 @@ def procesar_json(origen, silencioso=True):
                 "Posible sin trabajo de bomba"
             )
 
-            evidencias.append(
-                "No se identificaron horizontales confiables"
-            )
+            if sin_trabajo_por_area:
+                evidencias.append(
+                    "Área encerrada muy pequeña respecto del "
+                    "rectángulo envolvente: "
+                    f"{100 * compacidad_carta:.1f} %"
+                )
+            else:
+                evidencias.append(
+                    "No se identificaron horizontales confiables"
+                )
 
         # Las siguientes reglas necesitan carta ideal válida.
         horizontales_ok = (
@@ -4491,6 +4520,35 @@ def procesar_json(origen, silencioso=True):
             tubing_libre = False
             subexplotado = False
 
+        # La falta de trabajo efectivo es incompatible con los
+        # diagnósticos que requieren una bomba operando. Se conservan
+        # alertas mecánicas independientes como torque y carga.
+        if sin_trabajo:
+            diagnosticos_incompatibles = {
+                "Posible pozo subexplotado",
+                "Posible golpe de fluido",
+                "Posible compresión/interferencia de gas",
+                "Posible compresión/interferencia de gas suave",
+                "Posible pérdida en válvula viajera",
+                "Posible golpe de bomba",
+                "Posible tubing libre",
+            }
+            alertas = [
+                alerta
+                for alerta in alertas
+                if alerta not in diagnosticos_incompatibles
+            ]
+            if "Posible sin trabajo de bomba" not in alertas:
+                alertas.append("Posible sin trabajo de bomba")
+
+            perdida_valvula = False
+            golpe_fluido = False
+            compresion_gas = False
+            compresion_gas_suave = False
+            golpe_bomba = False
+            tubing_libre = False
+            subexplotado = False
+
         # El exceso de torque y el exceso de carga estructural
         # permanecen como alertas operativas. No reemplazan el
         # diagnóstico dinamométrico principal de la carta.
@@ -4503,14 +4561,14 @@ def procesar_json(origen, silencioso=True):
                 "sincronización y transmisión de datos"
             )
             confianza = 0.92
-        elif subexplotado:
-            diagnostico_principal = "Posible pozo subexplotado"
-            accion = "Evaluar aumento de régimen y revisar alertas secundarias"
-            confianza = 0.72
         elif sin_trabajo:
             diagnostico_principal = "Posible sin trabajo de bomba"
             accion = "Revisar bomba, sarta y carta de superficie"
             confianza = 0.90
+        elif subexplotado:
+            diagnostico_principal = "Posible pozo subexplotado"
+            accion = "Evaluar aumento de régimen y revisar alertas secundarias"
+            confianza = 0.72
         elif golpe_fluido:
             diagnostico_principal = "Posible golpe de fluido"
             accion = "Evaluar disminución de régimen"
@@ -4601,6 +4659,10 @@ def procesar_json(origen, silencioso=True):
                 ),
             "Sin_Trabajo_Bomba":
                 sin_trabajo,
+            "Sin_Trabajo_Por_Area":
+                sin_trabajo_por_area,
+            "Compacidad_Carta":
+                compacidad_carta,
             "Perdida_Valvula_Viajera":
                 perdida_valvula,
             "Golpe_Fluido":
