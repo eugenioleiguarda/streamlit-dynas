@@ -1800,6 +1800,318 @@ def procesar_json(origen, silencioso=True):
                 llenado_nuevo,
         })
 
+    # ============================================================
+    # 3. DESPEGUE INFERIOR DERECHO Y AJUSTE DE LA REFERENCIA
+    # ============================================================
+
+    def medir_despegue_inferior_derecho(
+        descendente,
+        linea_asc,
+        linea_desc,
+    ):
+        """
+        Mide cuánto se separa sostenidamente la rama inferior de su
+        horizontal antes del cierre derecho de la carta.
+        """
+        x = np.asarray(descendente["posicion"], dtype=float)
+        y = np.asarray(descendente["carga"], dtype=float)
+
+        rango_x = float(np.ptp(x))
+        gap = float(
+            linea_asc["carga_representativa"]
+            - linea_desc["carga_representativa"]
+        )
+
+        if (
+            len(x) < 6
+            or rango_x <= 0
+            or gap <= 0
+        ):
+            return {
+                "despegue_robusto_pct": np.nan,
+                "extension_despegue_pct": np.nan,
+                "sostenido": False,
+            }
+
+        u = (x - np.nanmin(x)) / rango_x
+
+        # Zona derecha previa al cierre. Se elimina el último 5 %,
+        # donde toda carta debe transferir carga para cerrar.
+        zona = (
+            (u >= 0.55)
+            & (u <= 0.95)
+        )
+
+        if np.sum(zona) < 4:
+            return {
+                "despegue_robusto_pct": np.nan,
+                "extension_despegue_pct": np.nan,
+                "sostenido": False,
+            }
+
+        separacion_pct = (
+            100.0
+            * np.maximum(
+                y - linea_desc["carga_representativa"],
+                0.0,
+            )
+            / gap
+        )
+
+        despegue_robusto = float(
+            np.nanpercentile(
+                separacion_pct[zona],
+                90,
+            )
+        )
+
+        puntos_separados = (
+            zona
+            & (separacion_pct >= 20.0)
+        )
+
+        if np.sum(puntos_separados) >= 2:
+            extension = float(
+                100.0
+                * np.ptp(x[puntos_separados])
+                / rango_x
+            )
+        else:
+            extension = 0.0
+
+        sostenido = bool(
+            despegue_robusto >= 25.0
+            and extension >= 8.0
+        )
+
+        return {
+            "despegue_robusto_pct": despegue_robusto,
+            "extension_despegue_pct": extension,
+            "sostenido": sostenido,
+        }
+
+
+    def proponer_horizontal_inferior_operativa(
+        descendente,
+        linea_asc,
+        linea_desc,
+    ):
+        """
+        Propone una referencia inferior robusta excluyendo el golpe
+        izquierdo y la transferencia derecha.
+        """
+        x = np.asarray(descendente["posicion"], dtype=float)
+        y = np.asarray(descendente["carga"], dtype=float)
+
+        rango_x = float(np.ptp(x))
+        gap = float(
+            linea_asc["carga_representativa"]
+            - linea_desc["carga_representativa"]
+        )
+
+        if len(x) < 8 or rango_x <= 0 or gap <= 0:
+            return None
+
+        u = (x - np.nanmin(x)) / rango_x
+        zona_central = (
+            (u >= 0.20)
+            & (u <= 0.75)
+        )
+
+        if np.sum(zona_central) < 6:
+            return None
+
+        carga_central = y[zona_central]
+        nivel_nuevo = float(
+            np.nanmedian(carga_central)
+        )
+        dispersion_relativa = float(
+            (
+                np.nanpercentile(carga_central, 90)
+                - np.nanpercentile(carga_central, 10)
+            )
+            / gap
+        )
+        elevacion_relativa = float(
+            (
+                nivel_nuevo
+                - linea_desc["carga_representativa"]
+            )
+            / gap
+        )
+
+        # Exigimos una meseta central compacta y una diferencia
+        # material respecto de la referencia anterior.
+        if (
+            dispersion_relativa > 0.15
+            or elevacion_relativa < 0.08
+            or nivel_nuevo
+                >= linea_asc["carga_representativa"] - 0.30 * gap
+        ):
+            return None
+
+        tolerancia = max(
+            0.06 * gap,
+            1e-9,
+        )
+        indices = np.flatnonzero(
+            zona_central
+            & (np.abs(y - nivel_nuevo) <= tolerancia)
+        )
+
+        if len(indices) < 3:
+            return None
+
+        nueva_linea = dict(linea_desc)
+        nueva_linea.update({
+            "carga_representativa": nivel_nuevo,
+            "indices": indices,
+            "cantidad_puntos": int(len(indices)),
+            "posicion_inicio": float(np.nanmin(x[indices])),
+            "posicion_fin": float(np.nanmax(x[indices])),
+            "horizontal_inferior_corregida": True,
+        })
+        return nueva_linea
+
+
+    for indice, resultado in resultados_cartas.iterrows():
+        if (
+            resultado["Estado_Horizontales"]
+            != "HORIZONTALES_OK"
+            or not bool(
+                resultado.get(
+                    "Carta_Geometricamente_Valida",
+                    True,
+                )
+            )
+        ):
+            resultados_cartas.at[
+                indice,
+                "Despegue_Inferior_Derecho_pct",
+            ] = np.nan
+            resultados_cartas.at[
+                indice,
+                "Extension_Despegue_Inferior_Derecho_pct",
+            ] = np.nan
+            resultados_cartas.at[
+                indice,
+                "Transferencia_Inferior_Sostenida",
+            ] = False
+            continue
+
+        linea_asc = resultado["Linea_Asc"]
+        linea_desc = resultado["Linea_Desc"]
+        descendente = resultado["Descendente"]
+
+        despegue = medir_despegue_inferior_derecho(
+            descendente,
+            linea_asc,
+            linea_desc,
+        )
+
+        # Si la rama no se despega sostenidamente, una cola izquierda
+        # no debe arrastrar hacia abajo toda la horizontal inferior.
+        if not despegue["sostenido"]:
+            nueva_linea = proponer_horizontal_inferior_operativa(
+                descendente,
+                linea_asc,
+                linea_desc,
+            )
+
+            if nueva_linea is not None:
+                carta_id = int(resultado["CartaId"])
+                carta = muestra.loc[
+                    muestra["CartaId"].astype(int)
+                    == carta_id
+                ].iloc[0]
+                posicion = a_array(carta["Fondo_Posiciones"])
+                carga = a_array(carta["Fondo_Cargas"])
+
+                calculo_nuevo = calcular_llenado_bomba(
+                    posicion=posicion,
+                    carga=carga,
+                    ascendente=resultado["Ascendente"],
+                    descendente=descendente,
+                    linea_asc=linea_asc,
+                    linea_desc=nueva_linea,
+                    fraccion_banda=0.35,
+                )
+
+                llenado_nuevo = calculo_nuevo[
+                    "llenado_porcentaje"
+                ]
+
+                if (
+                    np.isfinite(llenado_nuevo)
+                    and 0 < llenado_nuevo <= 120
+                ):
+                    linea_desc = nueva_linea
+                    separacion_nueva = float(
+                        linea_asc["carga_representativa"]
+                        - linea_desc["carga_representativa"]
+                    )
+                    peso_api = resultado["Peso_Fluido_API_lbf"]
+
+                    resultados_cartas.at[
+                        indice,
+                        "Linea_Desc",
+                    ] = linea_desc
+                    resultados_cartas.at[
+                        indice,
+                        "Carga_Desc_Geometrica",
+                    ] = linea_desc["carga_representativa"]
+                    resultados_cartas.at[
+                        indice,
+                        "Separacion_Horizontales",
+                    ] = separacion_nueva
+                    resultados_cartas.at[
+                        indice,
+                        "Separacion_Sobre_Peso_API",
+                    ] = (
+                        separacion_nueva / peso_api
+                        if np.isfinite(peso_api) and peso_api > 0
+                        else np.nan
+                    )
+                    resultados_cartas.at[
+                        indice,
+                        "Area_Ideal",
+                    ] = calculo_nuevo["area_ideal"]
+                    resultados_cartas.at[
+                        indice,
+                        "Llenado_Calculado_pct",
+                    ] = llenado_nuevo
+                    resultados_cartas.at[
+                        indice,
+                        "Vertices_Ideal",
+                    ] = calculo_nuevo["vertices_ideal"]
+                    resultados_cartas.at[
+                        indice,
+                        "Metodo_Horizontal_Inferior",
+                    ] = "MESETA_CENTRAL_SIN_DESPEGUE"
+                    resultados_cartas.at[
+                        indice,
+                        "Horizontal_Inferior_Corregida",
+                    ] = True
+
+                    despegue = medir_despegue_inferior_derecho(
+                        descendente,
+                        linea_asc,
+                        linea_desc,
+                    )
+
+        resultados_cartas.at[
+            indice,
+            "Despegue_Inferior_Derecho_pct",
+        ] = despegue["despegue_robusto_pct"]
+        resultados_cartas.at[
+            indice,
+            "Extension_Despegue_Inferior_Derecho_pct",
+        ] = despegue["extension_despegue_pct"]
+        resultados_cartas.at[
+            indice,
+            "Transferencia_Inferior_Sostenida",
+        ] = despegue["sostenido"]
+
 
     cartas_corregidas = pd.DataFrame(
         cartas_corregidas
@@ -1932,6 +2244,20 @@ def procesar_json(origen, silencioso=True):
             "Variabilidad_Horizontal_Superior_pct": variabilidad_sup,
             "Variabilidad_Horizontal_Inferior_pct": variabilidad_inf,
             "Datos_Operativos_Validos": r["Datos_Operativos_Validos"],
+            "Despegue_Inferior_Derecho_pct":
+                r.get("Despegue_Inferior_Derecho_pct", np.nan),
+            "Extension_Despegue_Inferior_Derecho_pct":
+                r.get(
+                    "Extension_Despegue_Inferior_Derecho_pct",
+                    np.nan,
+                ),
+            "Transferencia_Inferior_Sostenida":
+                bool(
+                    r.get(
+                        "Transferencia_Inferior_Sostenida",
+                        False,
+                    )
+                ),
             "Vacio_Superior_Izquierdo_pct": np.nan, "Vacio_Superior_Derecho_pct": np.nan,
             "Vacio_Inferior_Derecho_pct": np.nan, "Profundidad_Golpe_Inferior_pct": np.nan,
             "Ancho_Golpe_Inferior_pct": np.nan, "Pendiente_Transferencia_Derecha": np.nan,
@@ -3756,9 +4082,27 @@ def procesar_json(origen, silencioso=True):
             and llenado < 92.0
         )
 
+        despegue_inferior_derecho = metrica.get(
+            "Despegue_Inferior_Derecho_pct",
+            np.nan,
+        )
+        extension_despegue_inferior = metrica.get(
+            "Extension_Despegue_Inferior_Derecho_pct",
+            np.nan,
+        )
+        transferencia_inferior_sostenida = bool(
+            metrica.get(
+                "Transferencia_Inferior_Sostenida",
+                False,
+            )
+        )
+
         hay_indicio_admision = bool(
-            vacio_derecho_marcado
-            or vacio_derecho_suave
+            transferencia_inferior_sostenida
+            and (
+                vacio_derecho_marcado
+                or vacio_derecho_suave
+            )
         )
 
         # --------------------------------------------------------
@@ -4300,6 +4644,12 @@ def procesar_json(origen, silencioso=True):
                 vacio_sd,
             "Vacio_Inferior_Derecho_pct":
                 vacio_id,
+            "Despegue_Inferior_Derecho_pct":
+                despegue_inferior_derecho,
+            "Extension_Despegue_Inferior_Derecho_pct":
+                extension_despegue_inferior,
+            "Transferencia_Inferior_Sostenida":
+                transferencia_inferior_sostenida,
             "Angulo_Lateral_Izquierdo_deg":
                 angulo_izq,
             "Angulo_Lateral_Derecho_deg":
