@@ -1148,6 +1148,16 @@ def procesar_json(origen, silencioso=True):
             # Se conserva para auditoría, pero no invalida la carta:
             # el propio peso informado por la API puede ser anómalo.
 
+        escala_extrema_y_recorrido_inconsistente = bool(
+            np.isfinite(ratio_escala)
+            and ratio_escala > 10.0
+            and reversiones >= 3
+        )
+        if escala_extrema_y_recorrido_inconsistente:
+            evidencias.append(
+                "ESCALA_EXTREMA_Y_RECORRIDO_INCONSISTENTE"
+            )
+
         # Un indicador extremadamente marcado alcanza por sí solo.
         # Para señales moderadas exigimos concurrencia, reduciendo falsos
         # positivos sobre cartas reales complejas pero físicamente válidas.
@@ -1156,6 +1166,7 @@ def procesar_json(origen, silencioso=True):
             or reversiones >= 8
             or cruces >= 8
             or indicadores_moderados >= 2
+            or escala_extrema_y_recorrido_inconsistente
         )
 
         return {

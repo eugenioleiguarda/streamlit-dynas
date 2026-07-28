@@ -24,7 +24,7 @@ st.set_page_config(
     layout="wide",
 )
 
-PIPELINE_CACHE_VERSION = "2026-07-28-sin-trabajo-area-v1"
+PIPELINE_CACHE_VERSION = "2026-07-28-integridad-escala-v2"
 
 COLORES = {
     "Posible pozo subexplotado": "#16833b",
