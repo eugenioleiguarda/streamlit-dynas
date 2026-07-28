@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import importlib
 import json
 from math import ceil
 
@@ -9,13 +10,22 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from pipeline_diagnostico import a_array, procesar_json
+import pipeline_diagnostico as pipeline_diagnostico_modulo
 from vfm_produccion import predecir_vfm
 from controles_reales import (
     cruzar_controles,
     leer_controles,
     normalizar_pozo,
 )
+
+# Streamlit puede conservar módulos importados entre reruns. La recarga
+# explícita garantiza que un cambio subido a pipeline_diagnostico.py se use
+# inmediatamente y no quede mezclado con una versión anterior en memoria.
+pipeline_diagnostico_modulo = importlib.reload(
+    pipeline_diagnostico_modulo
+)
+a_array = pipeline_diagnostico_modulo.a_array
+procesar_json = pipeline_diagnostico_modulo.procesar_json
 
 
 st.set_page_config(
@@ -24,7 +34,7 @@ st.set_page_config(
     layout="wide",
 )
 
-PIPELINE_CACHE_VERSION = "2026-07-28-consolidacion-diagnosticos-v8-integridad"
+PIPELINE_CACHE_VERSION = "2026-07-28-consolidacion-diagnosticos-v9-reload"
 
 COLORES = {
     "Posible pozo subexplotado": "#16833b",
