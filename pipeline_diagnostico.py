@@ -4435,6 +4435,28 @@ def procesar_json(origen, silencioso=True):
             and llenado < 92.0
         )
 
+        # Respaldo para cartas fronterizas de alto llenado. Evita que
+        # pequeñas variaciones alrededor del 90 % conviertan una misma
+        # familia geométrica en "bien explotado". Se exige un vacío
+        # inferior derecho apreciable y una transferencia desplazada y
+        # relativamente rápida; no alcanza con el llenado aislado.
+        golpe_fluido_fronterizo = bool(
+            horizontales_ok
+            and not sin_trabajo
+            and np.isfinite(llenado)
+            and np.isfinite(vacio_id)
+            and np.isfinite(inicio_transferencia_derecha)
+            and np.isfinite(ancho_transferencia_20_80)
+            and 85.0 <= llenado <= 92.0
+            and vacio_id >= 15.0
+            and inicio_transferencia_derecha < 97.0
+            and ancho_transferencia_20_80 <= 28.0
+        )
+
+        if golpe_fluido_fronterizo:
+            hay_indicio_admision = True
+            transferencia_abrupta = True
+
         if transferencia_progresiva_inferida:
             transferencia_progresiva = True
         if transferencia_progresiva_tardia:
