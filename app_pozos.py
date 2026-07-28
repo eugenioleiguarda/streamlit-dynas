@@ -725,7 +725,7 @@ filtro_pozo = st.sidebar.multiselect("Pozo", pozos_disponibles)
 busqueda = st.sidebar.text_input("Buscar pozo")
 st.sidebar.header("Filtro individual por carta")
 filtro_individual = st.sidebar.multiselect(
-    "DiagnÃ³stico principal o secundario de la carta",
+    "Diagnóstico principal o secundario de la carta",
     diagnosticos_disponibles,
     help="Puede incluir diagnósticos débiles observados una o dos veces.",
 )
@@ -814,11 +814,11 @@ with tab_resumen:
         .sort_values(ascending=False)
         .rename("Cantidad_de_pozos")
         .reset_index()
-        .rename(columns={"Diagnosticos_Robustos_Lista": "DiagnÃ³stico"})
+        .rename(columns={"Diagnosticos_Robustos_Lista": "Diagnóstico"})
     )
     fig_robustos = go.Figure(go.Bar(
         x=conteo_robustos["Cantidad_de_pozos"],
-        y=conteo_robustos["DiagnÃ³stico"],
+        y=conteo_robustos["Diagnóstico"],
         orientation="h",
         marker_color="#0874d1",
         text=conteo_robustos["Cantidad_de_pozos"],
@@ -827,7 +827,7 @@ with tab_resumen:
     fig_robustos.update_layout(
         height=max(320, 38 * len(conteo_robustos)),
         yaxis=dict(autorange="reversed"),
-        xaxis_title="Pozos Ãºnicos con diagnÃ³stico robusto",
+        xaxis_title="Pozos únicos con diagnóstico robusto",
         margin=dict(l=20, r=30, t=20, b=35),
         template="plotly_white",
     )
