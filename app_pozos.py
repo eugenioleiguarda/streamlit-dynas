@@ -24,7 +24,7 @@ st.set_page_config(
     layout="wide",
 )
 
-PIPELINE_CACHE_VERSION = "2026-07-28-consolidacion-diagnosticos-v7"
+PIPELINE_CACHE_VERSION = "2026-07-28-consolidacion-diagnosticos-v8-integridad"
 
 COLORES = {
     "Posible pozo subexplotado": "#16833b",
