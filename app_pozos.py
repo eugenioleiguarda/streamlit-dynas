@@ -34,7 +34,7 @@ st.set_page_config(
     layout="wide",
 )
 
-PIPELINE_CACHE_VERSION = "2026-07-28-sin-trabajo-sin-llenado-v10"
+PIPELINE_CACHE_VERSION = "2026-07-28-diagnosticos-admision-unificados-v11"
 
 COLORES = {
     "Posible pozo subexplotado": "#16833b",
@@ -42,7 +42,6 @@ COLORES = {
     "Carta no válida - posible falla de medición o transmisión": "#b91c1c",
     "Posible golpe de fluido": "#e87918",
     "Posible compresión/interferencia de gas": "#2563eb",
-    "Posible compresión/interferencia de gas suave": "#4f7fe5",
     "Posible pérdida en válvula viajera": "#8b5cf6",
     "Posible golpe de bomba": "#e11d48",
     "Posible tubing libre": "#795548",
@@ -416,8 +415,6 @@ ACCIONES_POR_DIAGNOSTICO = {
         "Evaluar disminución de régimen",
     "Posible compresión/interferencia de gas":
         "Evaluar condición de admisión y revisar régimen",
-    "Posible compresión/interferencia de gas suave":
-        "Evaluar condición de admisión y revisar régimen",
     "Posible pérdida en válvula viajera":
         "Revisar válvula viajera",
     "Posible golpe de bomba":
@@ -484,7 +481,6 @@ def construir_exportacion_cartas(cartas):
         "Cierre_Tardio_Valvula_Viajera",
         "Golpe_Fluido",
         "Compresion_Gas",
-        "Compresion_Gas_Suave",
         "Golpe_Bomba",
         "Tubing_Libre",
         "Pozo_Subexplotado",

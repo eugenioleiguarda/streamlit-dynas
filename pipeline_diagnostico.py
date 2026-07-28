@@ -4296,6 +4296,7 @@ def procesar_json(origen, silencioso=True):
         golpe_fluido = False
         compresion_gas = False
         compresion_gas_suave = False
+        severidad_admision = "NO_APLICA"
 
         # --------------------------------------------------------
         # VACÍO DERECHO MARCADO
@@ -4442,6 +4443,11 @@ def procesar_json(origen, silencioso=True):
         if hay_indicio_admision:
             if transferencia_abrupta:
                 golpe_fluido = True
+                severidad_admision = (
+                    "MODERADA"
+                    if vacio_derecho_marcado
+                    else "LEVE"
+                )
 
                 alertas.append(
                     "Posible golpe de fluido"
@@ -4461,12 +4467,17 @@ def procesar_json(origen, silencioso=True):
                     vacio_derecho_suave
                     and not vacio_derecho_marcado
                 )
+                severidad_admision = (
+                    "LEVE"
+                    if compresion_gas_suave
+                    else "MODERADA"
+                )
+
+                alertas.append(
+                    "Posible compresión/interferencia de gas"
+                )
 
                 if compresion_gas_suave:
-                    alertas.append(
-                        "Posible compresión/interferencia de gas suave"
-                    )
-
                     if transferencia_progresiva_tardia:
                         evidencias.append(
                             "Vacíos derechos moderados y "
@@ -4485,10 +4496,6 @@ def procesar_json(origen, silencioso=True):
                         )
 
                 else:
-                    alertas.append(
-                        "Posible compresión/interferencia de gas"
-                    )
-
                     evidencias.append(
                         "Vacíos derechos importantes y "
                         "transferencia progresiva"
@@ -4746,6 +4753,7 @@ def procesar_json(origen, silencioso=True):
             golpe_fluido = False
             compresion_gas = False
             compresion_gas_suave = False
+            severidad_admision = "NO_APLICA"
             golpe_bomba = False
             tubing_libre = False
             subexplotado = False
@@ -4758,7 +4766,6 @@ def procesar_json(origen, silencioso=True):
                 "Posible pozo subexplotado",
                 "Posible golpe de fluido",
                 "Posible compresión/interferencia de gas",
-                "Posible compresión/interferencia de gas suave",
                 "Posible pérdida en válvula viajera",
                 "Posible tubing libre",
             }
@@ -4778,6 +4785,7 @@ def procesar_json(origen, silencioso=True):
             golpe_fluido = False
             compresion_gas = False
             compresion_gas_suave = False
+            severidad_admision = "NO_APLICA"
             tubing_libre = False
             subexplotado = False
 
@@ -4806,20 +4814,10 @@ def procesar_json(origen, silencioso=True):
             accion = "Evaluar disminución de régimen"
             confianza = 0.78
         elif compresion_gas:
-            if compresion_gas_suave:
-                diagnostico_principal = (
-                    "Posible compresión/interferencia de gas suave"
-                )
-
-                confianza = 0.68
-
-            else:
-                diagnostico_principal = (
-                    "Posible compresión/interferencia de gas"
-                )
-
-                confianza = 0.74
-
+            diagnostico_principal = (
+                "Posible compresión/interferencia de gas"
+            )
+            confianza = 0.68 if compresion_gas_suave else 0.74
             accion = (
                 "Evaluar condición de admisión y revisar régimen"
             )
@@ -4946,6 +4944,8 @@ def procesar_json(origen, silencioso=True):
                 compresion_gas,
             "Compresion_Gas_Suave":
                 compresion_gas_suave,
+            "Severidad_Admision":
+                severidad_admision,
             "Golpe_Bomba":
                 golpe_bomba,
             "Profundidad_Golpe_Inferior_pct":
