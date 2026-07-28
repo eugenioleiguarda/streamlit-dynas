@@ -744,22 +744,35 @@ if busqueda.strip():
         busqueda.strip(), case=False, regex=False
     )
 
-# Los filtros determinan pozos. Luego se recuperan todas las cartas
-# de esos pozos para preservar el contexto temporal.
-pozos_filtrados = sorted(
+# Los filtros de pozo y de robustez determinan primero el universo
+# candidato. El filtro individual conserva solamente los pozos que
+# tengan al menos una carta coincidente.
+pozos_candidatos = sorted(
     resumen_robusto_total.loc[mascara_pozos, "Pozo"].dropna().unique()
 )
-cartas_contexto = historico.loc[
-    historico["Pozo"].isin(pozos_filtrados)
+cartas_candidatas = historico.loc[
+    historico["Pozo"].isin(pozos_candidatos)
 ].copy()
+
 if filtro_individual:
-    cartas_filtradas = cartas_contexto.loc[
-        cartas_contexto["Diagnosticos_Todos"].map(
+    cartas_filtradas = cartas_candidatas.loc[
+        cartas_candidatas["Diagnosticos_Todos"].map(
             lambda xs: any(d in xs for d in filtro_individual)
         )
     ].copy()
+    pozos_filtrados = sorted(
+        cartas_filtradas["Pozo"].dropna().unique()
+    )
 else:
-    cartas_filtradas = cartas_contexto.copy()
+    cartas_filtradas = cartas_candidatas.copy()
+    pozos_filtrados = pozos_candidatos
+
+# El resumen y el detalle conservan todas las cartas de los pozos
+# resultantes. El explorador muestra solamente las cartas que cumplen
+# el filtro individual.
+cartas_contexto = historico.loc[
+    historico["Pozo"].isin(pozos_filtrados)
+].copy()
 cartas_filtradas = cartas_filtradas.sort_values(
     ["Pozo", "Fecha"], ascending=[True, False]
 )
@@ -894,8 +907,9 @@ with tab_resumen:
 
 with tab_explorador:
     st.caption(
-        "Los filtros seleccionan pozos; se muestran todas sus cartas "
-        "ordenadas por pozo y fecha."
+        "Se muestran las cartas que cumplen el filtro individual, "
+        "ordenadas por pozo y fecha. En Detalle se conserva el "
+        "historial completo de cada pozo resultante."
     )
     cartas_por_pagina = st.selectbox(
         "Cartas por página",
