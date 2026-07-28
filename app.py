@@ -63,8 +63,17 @@ def lista_alertas(valor):
     return [str(valor)]
 
 
+PIPELINE_CACHE_VERSION = "2026-07-27-despegue-inferior-v1"
+
+
 @st.cache_data(show_spinner=False)
-def ejecutar_pipeline(contenido: bytes):
+def ejecutar_pipeline(
+    contenido: bytes,
+    version_pipeline: str,
+):
+    # La versión forma parte de la clave del caché. Esto obliga
+    # a recalcular cuando cambia la lógica del módulo importado.
+    _ = version_pipeline
     return procesar_json(contenido)
 
 
@@ -381,7 +390,10 @@ archivo = archivos[indice_archivo_actual]
 
 try:
     with st.spinner("Procesando cartas y calculando producción VFM…"):
-        salida = ejecutar_pipeline(archivo.getvalue())
+        salida = ejecutar_pipeline(
+            archivo.getvalue(),
+            PIPELINE_CACHE_VERSION,
+        )
         produccion_vfm = ejecutar_vfm(archivo.getvalue())
         produccion_vfm = excluir_vfm_sin_integridad(
             salida,
@@ -425,7 +437,8 @@ for indice_archivo, archivo_hist in enumerate(archivos):
             tabla_hist = df.copy()
         else:
             salida_hist = ejecutar_pipeline(
-                archivo_hist.getvalue()
+                archivo_hist.getvalue(),
+                PIPELINE_CACHE_VERSION,
             )
             produccion_hist = ejecutar_vfm(
                 archivo_hist.getvalue()
