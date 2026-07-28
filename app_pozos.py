@@ -34,7 +34,9 @@ st.set_page_config(
     layout="wide",
 )
 
-PIPELINE_CACHE_VERSION = "2026-07-28-admision-fronteriza-v12"
+PIPELINE_CACHE_VERSION = (
+    "2026-07-28-admision-fronteriza-golpe-bomba-v13"
+)
 
 COLORES = {
     "Posible pozo subexplotado": "#16833b",

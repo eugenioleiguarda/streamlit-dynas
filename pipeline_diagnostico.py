@@ -4567,6 +4567,37 @@ def procesar_json(origen, silencioso=True):
                 "localizada en el extremo izquierdo de la descendente"
             )
 
+        # Respaldo muy acotado para cartas fronterizas en las que coexisten
+        # un golpe de bomba a la izquierda y un llenado incompleto asociado
+        # a la transferencia derecha. Algunas de estas cartas no entregan
+        # métricas 20-80 estables y, por eso, quedaban únicamente como golpe
+        # de bomba aunque conservaran la firma leve de golpe de fluido.
+        golpe_fluido_fronterizo_con_golpe_bomba = bool(
+            golpe_bomba
+            and horizontales_ok
+            and not sin_trabajo
+            and np.isfinite(llenado)
+            and np.isfinite(vacio_sd)
+            and np.isfinite(vacio_id)
+            and 85.0 <= llenado <= 92.0
+            and vacio_sd >= 4.0
+            and vacio_id >= 15.0
+        )
+
+        if golpe_fluido_fronterizo_con_golpe_bomba:
+            golpe_fluido = True
+            severidad_admision = "LEVE"
+
+            if "Posible golpe de fluido" not in alertas:
+                alertas.append(
+                    "Posible golpe de fluido"
+                )
+
+            evidencias.append(
+                "Golpe de bomba coexistente con vacío derecho "
+                "y llenado fronterizo"
+            )
+
         # --------------------------------------------------------
         # 5. POZO SUBEXPLOTADO
         # --------------------------------------------------------
