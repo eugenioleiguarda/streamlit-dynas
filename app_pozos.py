@@ -596,18 +596,12 @@ st.caption(
 st.sidebar.caption(
     f"Versión del algoritmo: {PIPELINE_CACHE_VERSION}"
 )
-if st.sidebar.button(
+reprocesamiento_solicitado = st.sidebar.button(
     "Reprocesar todos los archivos",
     use_container_width=True,
-):
-    st.cache_data.clear()
-    st.session_state["reprocesamiento_solicitado"] = True
-    st.rerun()
-
-reprocesamiento_solicitado = bool(
-    st.session_state.get("reprocesamiento_solicitado", False)
 )
 if reprocesamiento_solicitado:
+    st.cache_data.clear()
     st.sidebar.info(
         "Reprocesando todos los JSON con la versión actual…"
     )
@@ -669,7 +663,6 @@ with st.spinner("Procesando cartas, diagnósticos y VFM…"):
             errores_archivos.append(f"{archivo.name}: {exc}")
 
 if reprocesamiento_solicitado:
-    st.session_state["reprocesamiento_solicitado"] = False
     st.sidebar.success("Reprocesamiento terminado.")
     st.toast(
         "Todos los archivos fueron reprocesados con el algoritmo actual.",
