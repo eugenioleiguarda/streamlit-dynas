@@ -1059,6 +1059,8 @@ def procesar_json(origen, silencioso=True):
             "saltos_grandes": 0,
             "reversiones_posicion": 0,
             "cruces_propios": 0,
+            "cruces_extremo_izquierdo": 0,
+            "cruces_fuera_extremo_izquierdo": 0,
             "rango_carga_sobre_peso_api": np.nan,
         }
 
@@ -1112,6 +1114,7 @@ def procesar_json(origen, silencioso=True):
             (y - np.nanmin(y)) / rango_y,
         ])
         cruces = 0
+        posiciones_x_cruces = []
         cantidad_segmentos = len(puntos) - 1
         for i in range(cantidad_segmentos):
             for j in range(i + 2, cantidad_segmentos):
@@ -1124,6 +1127,45 @@ def procesar_json(origen, silencioso=True):
                     puntos[j + 1],
                 ):
                     cruces += 1
+                    # Coordenada normalizada del cruce. Permite distinguir
+                    # cruces físicos localizados en el extremo izquierdo
+                    # (por ejemplo, un golpe de bomba) de un contorno
+                    # desordenado con cruces distribuidos.
+                    p = puntos[i]
+                    r = puntos[i + 1] - puntos[i]
+                    q = puntos[j]
+                    s = puntos[j + 1] - puntos[j]
+                    denominador = (
+                        r[0] * s[1]
+                        - r[1] * s[0]
+                    )
+                    if abs(denominador) > 1e-12:
+                        qp = q - p
+                        parametro = (
+                            qp[0] * s[1]
+                            - qp[1] * s[0]
+                        ) / denominador
+                        x_cruce = float(
+                            p[0] + parametro * r[0]
+                        )
+                    else:
+                        x_cruce = float(np.mean([
+                            p[0],
+                            puntos[i + 1, 0],
+                            q[0],
+                            puntos[j + 1, 0],
+                        ]))
+                    posiciones_x_cruces.append(x_cruce)
+
+        # Los cruces dentro del primer 12 % del recorrido se auditan,
+        # pero no invalidan por sí solos la carta: pueden formar parte
+        # de la firma de un golpe de bomba localizado.
+        cruces_extremo_izquierdo = int(np.sum(
+            np.asarray(posiciones_x_cruces) <= 0.12
+        ))
+        cruces_fuera_extremo_izquierdo = int(
+            cruces - cruces_extremo_izquierdo
+        )
 
         ratio_escala = (
             rango_y / float(peso_api)
@@ -1140,9 +1182,13 @@ def procesar_json(origen, silencioso=True):
         if reversiones >= 5:
             evidencias.append("DEMASIADAS_INVERSIONES_DE_POSICION")
             indicadores_moderados += 1
-        if cruces >= 4:
+        if cruces_fuera_extremo_izquierdo >= 4:
             evidencias.append("MULTIPLES_CRUCES_DEL_CONTORNO")
             indicadores_moderados += 1
+        elif cruces_extremo_izquierdo >= 4:
+            evidencias.append(
+                "CRUCES_LOCALIZADOS_EXTREMO_IZQUIERDO"
+            )
         if np.isfinite(ratio_escala) and ratio_escala > 8.0:
             evidencias.append("RANGO_CARGA_INCOMPATIBLE_CON_PESO_API")
             # Se conserva para auditoría, pero no invalida la carta:
@@ -1164,7 +1210,7 @@ def procesar_json(origen, silencioso=True):
         invalida = bool(
             saltos_grandes >= 6
             or reversiones >= 8
-            or cruces >= 8
+            or cruces_fuera_extremo_izquierdo >= 8
             or indicadores_moderados >= 2
             or escala_extrema_y_recorrido_inconsistente
         )
@@ -1175,6 +1221,10 @@ def procesar_json(origen, silencioso=True):
             "saltos_grandes": saltos_grandes,
             "reversiones_posicion": reversiones,
             "cruces_propios": cruces,
+            "cruces_extremo_izquierdo":
+                cruces_extremo_izquierdo,
+            "cruces_fuera_extremo_izquierdo":
+                cruces_fuera_extremo_izquierdo,
             "rango_carga_sobre_peso_api": ratio_escala,
         }
 
@@ -1282,6 +1332,12 @@ def procesar_json(origen, silencioso=True):
                 "Saltos_Grandes_Carta": integridad["saltos_grandes"],
                 "Reversiones_Posicion_Carta": integridad["reversiones_posicion"],
                 "Cruces_Propios_Carta": integridad["cruces_propios"],
+                "Cruces_Extremo_Izquierdo_Carta": (
+                    integridad["cruces_extremo_izquierdo"]
+                ),
+                "Cruces_Fuera_Extremo_Izquierdo_Carta": (
+                    integridad["cruces_fuera_extremo_izquierdo"]
+                ),
                 "Rango_Carga_Sobre_Peso_API": (
                     integridad["rango_carga_sobre_peso_api"]
                 ),
@@ -3831,6 +3887,88 @@ def procesar_json(origen, silencioso=True):
     # Por debajo de este valor, ambas carreras recorren prácticamente
     # la misma trayectoria y se considera posible falta de trabajo.
     UMBRAL_COMPACIDAD_SIN_TRABAJO = 0.16
+    UMBRAL_APERTURA_CENTRAL_BLOQUEO = 0.24
+
+    def medir_apertura_central(resultado):
+        """
+        Apertura mediana entre carreras en el 20--85 % del recorrido.
+
+        Se excluye deliberadamente el extremo izquierdo para que un golpe de
+        bomba profundo no infle artificialmente el trabajo hidráulico.
+        """
+        try:
+            asc = resultado["Ascendente"]
+            desc = resultado["Descendente"]
+            xa = np.asarray(asc["posicion"], dtype=float)
+            ya = np.asarray(asc["carga"], dtype=float)
+            xd = np.asarray(desc["posicion"], dtype=float)
+            yd = np.asarray(desc["carga"], dtype=float)
+            x_total = np.concatenate([xa, xd])
+            y_total = np.concatenate([ya, yd])
+            rango_x = float(np.ptp(x_total))
+            rango_y = float(np.ptp(y_total))
+            if rango_x <= 1e-9 or rango_y <= 1e-9:
+                return np.nan
+
+            x_min = float(np.nanmin(x_total))
+            grilla = x_min + rango_x * np.linspace(0.20, 0.85, 40)
+
+            def interpolar_rama(x, y):
+                orden = np.argsort(x)
+                x_ordenado = x[orden]
+                y_ordenado = y[orden]
+                x_unico, indices = np.unique(x_ordenado, return_index=True)
+                y_unico = y_ordenado[indices]
+                if len(x_unico) < 2:
+                    return np.full_like(grilla, np.nan)
+                return np.interp(grilla, x_unico, y_unico)
+
+            apertura = np.abs(
+                interpolar_rama(xa, ya) - interpolar_rama(xd, yd)
+            )
+            return float(np.nanmedian(apertura) / rango_y)
+        except Exception:
+            return np.nan
+
+    def medir_cierre_viajera_tardio(resultado):
+        """
+        Mide cuánto demora la ascendente en transferirse desde la carga
+        inferior hacia la superior al comienzo de la carrera.
+        """
+        salida = {
+            "Carga_Inicial_Asc_Relativa": np.nan,
+            "Posicion_Cierre_50_pct": np.nan,
+            "Posicion_Cierre_80_pct": np.nan,
+        }
+        try:
+            asc = resultado["Ascendente"]
+            x = np.asarray(asc["posicion"], dtype=float)
+            y = np.asarray(asc["carga"], dtype=float)
+            carga_inf = float(resultado["Carga_Desc_Geometrica"])
+            carga_sup = float(resultado["Carga_Asc_Geometrica"])
+            rango_x = float(np.ptp(x))
+            gap = carga_sup - carga_inf
+            if rango_x <= 1e-9 or gap <= 1e-9:
+                return salida
+
+            progreso = 100.0 * (x - np.nanmin(x)) / rango_x
+            carga_rel = (y - carga_inf) / gap
+            zona_inicial = progreso <= 5.0
+            if np.any(zona_inicial):
+                salida["Carga_Inicial_Asc_Relativa"] = float(
+                    np.nanmedian(carga_rel[zona_inicial])
+                )
+
+            for nivel, clave in (
+                (0.50, "Posicion_Cierre_50_pct"),
+                (0.80, "Posicion_Cierre_80_pct"),
+            ):
+                candidatos = np.flatnonzero(carga_rel >= nivel)
+                if len(candidatos):
+                    salida[clave] = float(progreso[candidatos[0]])
+        except Exception:
+            pass
+        return salida
 
 
     for _, metrica in metricas_cartas.iterrows():
@@ -3921,12 +4059,32 @@ def procesar_json(origen, silencioso=True):
             ),
             errors="coerce",
         )
+        apertura_central_carta = medir_apertura_central(resultado)
+        sumergencia_preliminar = pd.to_numeric(
+            metrica.get("Sumergencia_Relativa_pct", np.nan),
+            errors="coerce",
+        )
 
         sin_trabajo_por_area = bool(
             not carta_no_valida
             and np.isfinite(compacidad_carta)
             and compacidad_carta
                 <= UMBRAL_COMPACIDAD_SIN_TRABAJO
+        )
+        bloqueo_gas_probable = bool(
+            not carta_no_valida
+            and np.isfinite(apertura_central_carta)
+            and apertura_central_carta <= UMBRAL_APERTURA_CENTRAL_BLOQUEO
+            and (
+                (
+                    np.isfinite(sumergencia_preliminar)
+                    and sumergencia_preliminar < 0.0
+                )
+                or (
+                    np.isfinite(compacidad_carta)
+                    and compacidad_carta <= 0.25
+                )
+            )
         )
 
         sin_trabajo = bool(
@@ -3936,6 +4094,7 @@ def procesar_json(origen, silencioso=True):
                     "Posible_Sin_Trabajo_Bomba"
                 ]
                 or sin_trabajo_por_area
+                or bloqueo_gas_probable
             )
         )
 
@@ -3944,7 +4103,13 @@ def procesar_json(origen, silencioso=True):
                 "Posible sin trabajo de bomba"
             )
 
-            if sin_trabajo_por_area:
+            if bloqueo_gas_probable:
+                evidencias.append(
+                    "Apertura central muy baja, excluyendo el impacto "
+                    "izquierdo: probable bloqueo por gas "
+                    f"({100 * apertura_central_carta:.1f} %)"
+                )
+            elif sin_trabajo_por_area:
                 evidencias.append(
                     "Área encerrada muy pequeña respecto del "
                     "rectángulo envolvente: "
@@ -4005,6 +4170,41 @@ def procesar_json(origen, silencioso=True):
         # 2. PÉRDIDA EN VÁLVULA VIAJERA
         # --------------------------------------------------------
 
+        metricas_cierre_viajera = medir_cierre_viajera_tardio(resultado)
+        carga_inicial_asc_relativa = metricas_cierre_viajera[
+            "Carga_Inicial_Asc_Relativa"
+        ]
+        posicion_cierre_50 = metricas_cierre_viajera[
+            "Posicion_Cierre_50_pct"
+        ]
+        posicion_cierre_80 = metricas_cierre_viajera[
+            "Posicion_Cierre_80_pct"
+        ]
+        cierre_tardio_viajera = bool(
+            horizontales_ok
+            and not sin_trabajo
+            and np.isfinite(vacio_si)
+            and np.isfinite(vacio_sd)
+            and np.isfinite(vacio_id)
+            and np.isfinite(carga_inicial_asc_relativa)
+            and np.isfinite(posicion_cierre_50)
+            and np.isfinite(posicion_cierre_80)
+            and vacio_si >= 12.0
+            and vacio_sd < 8.0
+            and vacio_id < 20.0
+            and carga_inicial_asc_relativa <= 0.15
+            and posicion_cierre_50 >= 8.0
+            and posicion_cierre_80 >= 12.0
+        )
+        if cierre_tardio_viajera:
+            alertas.append(
+                "Posible cierre tardío de válvula viajera"
+            )
+            evidencias.append(
+                "La ascendente conserva inicialmente la carga inferior "
+                "y transfiere tardÃ­amente el peso de fluido"
+            )
+
         vacios_superiores_valvula = bool(
             np.isfinite(vacio_si)
             and np.isfinite(vacio_sd)
@@ -4016,14 +4216,17 @@ def procesar_json(origen, silencioso=True):
                         >= UMBRAL_VACIO_SUP_DER_VALVULA
                 )
                 or (
-                    vacio_si >= 12.0
-                    and vacio_sd >= 10.0
+                    vacio_si >= 8.0
+                    and vacio_sd >= 18.0
+                    and (vacio_si + vacio_sd) >= 30.0
                 )
             )
         )
 
         perdida_valvula = (
             horizontales_ok
+            and not sin_trabajo
+            and not cierre_tardio_viajera
             and np.isfinite(vacio_si)
             and np.isfinite(vacio_sd)
             and np.isfinite(vacio_id)
@@ -4311,8 +4514,21 @@ def procesar_json(origen, silencioso=True):
 
         golpe_bomba = bool(
             horizontales_ok
-            and not sin_trabajo
-            and metricas_golpe["Golpe_Localizado_Izquierda"]
+            and (
+                metricas_golpe["Golpe_Localizado_Izquierda"]
+                or (
+                    bloqueo_gas_probable
+                    and metricas_golpe[
+                        "Profundidad_Golpe_Inferior_pct"
+                    ] >= 25.0
+                    and metricas_golpe[
+                        "Ancho_Golpe_Inferior_pct"
+                    ] <= 20.0
+                    and metricas_golpe[
+                        "Posicion_Minimo_Golpe_pct"
+                    ] <= 5.0
+                )
+            )
         )
 
         if golpe_bomba:
@@ -4483,6 +4699,7 @@ def procesar_json(origen, silencioso=True):
             horizontales_ok
             and not sin_trabajo
             and not perdida_valvula
+            and not cierre_tardio_viajera
             and np.isfinite(
                 angulo_ideal_izquierdo
             )
@@ -4525,6 +4742,7 @@ def procesar_json(origen, silencioso=True):
             exceso_carga_estructural = False
             sin_trabajo = False
             perdida_valvula = False
+            cierre_tardio_viajera = False
             golpe_fluido = False
             compresion_gas = False
             compresion_gas_suave = False
@@ -4542,9 +4760,11 @@ def procesar_json(origen, silencioso=True):
                 "Posible compresión/interferencia de gas",
                 "Posible compresión/interferencia de gas suave",
                 "Posible pérdida en válvula viajera",
-                "Posible golpe de bomba",
                 "Posible tubing libre",
             }
+            diagnosticos_incompatibles.add(
+                "Posible cierre tardío de válvula viajera"
+            )
             alertas = [
                 alerta
                 for alerta in alertas
@@ -4554,10 +4774,10 @@ def procesar_json(origen, silencioso=True):
                 alertas.append("Posible sin trabajo de bomba")
 
             perdida_valvula = False
+            cierre_tardio_viajera = False
             golpe_fluido = False
             compresion_gas = False
             compresion_gas_suave = False
-            golpe_bomba = False
             tubing_libre = False
             subexplotado = False
 
@@ -4607,6 +4827,15 @@ def procesar_json(origen, silencioso=True):
             diagnostico_principal = "Posible pérdida en válvula viajera"
             accion = "Revisar válvula viajera"
             confianza = 0.76
+        elif cierre_tardio_viajera:
+            diagnostico_principal = (
+                "Posible cierre tardío de válvula viajera"
+            )
+            accion = (
+                "Revisar válvula viajera, suciedad y dispositivo "
+                "mecánico antibloqueo de gas"
+            )
+            confianza = 0.74
         elif golpe_bomba:
             diagnostico_principal = "Posible golpe de bomba"
             accion = "Revisar espaciamiento"
@@ -4615,6 +4844,18 @@ def procesar_json(origen, silencioso=True):
             diagnostico_principal = "Posible tubing libre"
             accion = "Revisar condición y anclaje del tubing"
             confianza = 0.68
+        elif exceso_torque:
+            diagnostico_principal = "Exceso de torque"
+            accion = (
+                "Revisar balanceo, régimen y capacidad de la caja reductora"
+            )
+            confianza = 0.98
+        elif exceso_carga_estructural:
+            diagnostico_principal = "Exceso de carga estructural"
+            accion = (
+                "Revisar carga admisible de la unidad y condición estructural"
+            )
+            confianza = 0.98
         else:
             diagnostico_principal = "Pozo bien explotado"
             accion = "Mantener seguimiento operativo"
@@ -4664,6 +4905,16 @@ def procesar_json(origen, silencioso=True):
                     "Cruces_Propios_Carta",
                     np.nan,
                 ),
+            "Cruces_Extremo_Izquierdo_Carta":
+                resultado.get(
+                    "Cruces_Extremo_Izquierdo_Carta",
+                    np.nan,
+                ),
+            "Cruces_Fuera_Extremo_Izquierdo_Carta":
+                resultado.get(
+                    "Cruces_Fuera_Extremo_Izquierdo_Carta",
+                    np.nan,
+                ),
             "Rango_Carga_Sobre_Peso_API":
                 resultado.get(
                     "Rango_Carga_Sobre_Peso_API",
@@ -4673,10 +4924,22 @@ def procesar_json(origen, silencioso=True):
                 sin_trabajo,
             "Sin_Trabajo_Por_Area":
                 sin_trabajo_por_area,
+            "Bloqueo_Gas_Probable":
+                bloqueo_gas_probable,
             "Compacidad_Carta":
                 compacidad_carta,
+            "Apertura_Central_Carta":
+                apertura_central_carta,
             "Perdida_Valvula_Viajera":
                 perdida_valvula,
+            "Cierre_Tardio_Valvula_Viajera":
+                cierre_tardio_viajera,
+            "Carga_Inicial_Asc_Relativa":
+                carga_inicial_asc_relativa,
+            "Posicion_Cierre_50_pct":
+                posicion_cierre_50,
+            "Posicion_Cierre_80_pct":
+                posicion_cierre_80,
             "Golpe_Fluido":
                 golpe_fluido,
             "Compresion_Gas":

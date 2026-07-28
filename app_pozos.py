@@ -24,7 +24,7 @@ st.set_page_config(
     layout="wide",
 )
 
-PIPELINE_CACHE_VERSION = "2026-07-28-admision-derecha-v5"
+PIPELINE_CACHE_VERSION = "2026-07-28-consolidacion-diagnosticos-v7"
 
 COLORES = {
     "Posible pozo subexplotado": "#16833b",
@@ -36,6 +36,7 @@ COLORES = {
     "Posible pérdida en válvula viajera": "#8b5cf6",
     "Posible golpe de bomba": "#e11d48",
     "Posible tubing libre": "#795548",
+    "Posible cierre tardío de válvula viajera": "#a855f7",
     "Pozo bien explotado": "#14b8a6",
     "Exceso de torque": "#dc2626",
     "Exceso de carga estructural": "#991b1b",
@@ -296,6 +297,34 @@ def diagnostico_consolidado(cartas_ultimas):
     )
 
 
+def tabla_diagnosticos_robustos(historico):
+    """
+    Una fila por pozo. Se consideran las últimas cinco cartas y un
+    diagnóstico es robusto cuando aparece al menos tres veces.
+    """
+    filas = []
+    for pozo, grupo in historico.groupby("Pozo", sort=True):
+        ultimas = grupo.nlargest(5, "Fecha")
+        conteos = {}
+        for lista in ultimas["Diagnosticos_Todos"]:
+            for diagnostico in set(lista_alertas(lista)):
+                if diagnostico != "Pozo bien explotado":
+                    conteos[diagnostico] = conteos.get(diagnostico, 0) + 1
+        robustos = sorted(
+            diagnostico
+            for diagnostico, cantidad in conteos.items()
+            if cantidad >= 3
+        )
+        filas.append({
+            "Pozo": pozo,
+            "Cantidad_Cartas": int(len(grupo)),
+            "Cartas_Analizadas_Robustez": int(len(ultimas)),
+            "Diagnosticos_Robustos_Lista": robustos,
+            "Tiene_Diagnostico_Robusto": bool(robustos),
+        })
+    return pd.DataFrame(filas)
+
+
 def carrera_bomba(fila):
     pares = [
         ("CarreraEfectivaBombaInicio", "CarreraEfectivaBombaFin"),
@@ -372,6 +401,8 @@ ACCIONES_POR_DIAGNOSTICO = {
         "Revisar válvula viajera",
     "Posible golpe de bomba":
         "Revisar espaciamiento",
+    "Posible cierre tardío de válvula viajera":
+        "Revisar válvula viajera, suciedad y dispositivo antibloqueo de gas",
     "Posible tubing libre":
         "Revisar condición y anclaje del tubing",
     "Exceso de torque":
@@ -426,7 +457,10 @@ def construir_exportacion_cartas(cartas):
         "Evidencias_Texto",
         "Carta_No_Valida",
         "Sin_Trabajo_Bomba",
+        "Bloqueo_Gas_Probable",
+        "Apertura_Central_Carta",
         "Perdida_Valvula_Viajera",
+        "Cierre_Tardio_Valvula_Viajera",
         "Golpe_Fluido",
         "Compresion_Gas",
         "Compresion_Gas_Suave",
@@ -640,33 +674,64 @@ diagnosticos_disponibles = sorted({
     for d in lista
 })
 pozos_disponibles = sorted(historico["Pozo"].dropna().unique())
+resumen_robusto_total = tabla_diagnosticos_robustos(historico)
+diagnosticos_robustos_disponibles = sorted({
+    diagnostico
+    for lista in resumen_robusto_total["Diagnosticos_Robustos_Lista"]
+    for diagnostico in lista
+})
 
 st.sidebar.header("Filtros de pozos")
-filtro_diagnostico = st.sidebar.multiselect(
-    "Diagnóstico principal o secundario",
-    diagnosticos_disponibles,
+filtro_robusto = st.sidebar.multiselect(
+    "Diagnóstico robusto del pozo",
+    diagnosticos_robustos_disponibles,
+    help=(
+        "Sólo considera diagnósticos presentes en al menos tres "
+        "de las últimas cinco cartas."
+    ),
 )
 filtro_pozo = st.sidebar.multiselect("Pozo", pozos_disponibles)
 busqueda = st.sidebar.text_input("Buscar pozo")
+st.sidebar.header("Filtro individual por carta")
+filtro_individual = st.sidebar.multiselect(
+    "DiagnÃ³stico principal o secundario de la carta",
+    diagnosticos_disponibles,
+    help="Puede incluir diagnósticos débiles observados una o dos veces.",
+)
 
-mascara = pd.Series(True, index=historico.index)
-if filtro_diagnostico:
-    mascara &= historico["Diagnosticos_Todos"].map(
-        lambda xs: any(d in xs for d in filtro_diagnostico)
+mascara_pozos = pd.Series(True, index=resumen_robusto_total.index)
+if filtro_robusto:
+    mascara_pozos &= resumen_robusto_total[
+        "Diagnosticos_Robustos_Lista"
+    ].map(
+        lambda xs: any(d in xs for d in filtro_robusto)
     )
 if filtro_pozo:
-    mascara &= historico["Pozo"].isin(filtro_pozo)
+    mascara_pozos &= resumen_robusto_total["Pozo"].isin(filtro_pozo)
 if busqueda.strip():
-    mascara &= historico["Pozo"].astype(str).str.contains(
+    mascara_pozos &= resumen_robusto_total["Pozo"].astype(str).str.contains(
         busqueda.strip(), case=False, regex=False
     )
 
 # Los filtros determinan pozos. Luego se recuperan todas las cartas
 # de esos pozos para preservar el contexto temporal.
-pozos_filtrados = sorted(historico.loc[mascara, "Pozo"].dropna().unique())
-cartas_filtradas = historico.loc[
+pozos_filtrados = sorted(
+    resumen_robusto_total.loc[mascara_pozos, "Pozo"].dropna().unique()
+)
+cartas_contexto = historico.loc[
     historico["Pozo"].isin(pozos_filtrados)
-].sort_values(["Pozo", "Fecha"], ascending=[True, False])
+].copy()
+if filtro_individual:
+    cartas_filtradas = cartas_contexto.loc[
+        cartas_contexto["Diagnosticos_Todos"].map(
+            lambda xs: any(d in xs for d in filtro_individual)
+        )
+    ].copy()
+else:
+    cartas_filtradas = cartas_contexto.copy()
+cartas_filtradas = cartas_filtradas.sort_values(
+    ["Pozo", "Fecha"], ascending=[True, False]
+)
 
 tab_resumen, tab_explorador, tab_detalle, tab_descargas = st.tabs(
     [
@@ -679,12 +744,12 @@ tab_resumen, tab_explorador, tab_detalle, tab_descargas = st.tabs(
 
 with tab_resumen:
     ultimas = (
-        cartas_filtradas.sort_values("Fecha")
+        cartas_contexto.sort_values("Fecha")
         .drop_duplicates("Pozo", keep="last")
     )
     robustos_por_pozo = []
     variables = 0
-    for pozo, grupo in cartas_filtradas.groupby("Pozo"):
+    for pozo, grupo in cartas_contexto.groupby("Pozo"):
         cinco = grupo.nlargest(5, "Fecha")
         estado, texto, variable = diagnostico_consolidado(cinco)
         robustos_por_pozo.append({
@@ -697,7 +762,7 @@ with tab_resumen:
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Pozos del filtro", len(pozos_filtrados))
-    c2.metric("Cartas asociadas", len(cartas_filtradas))
+    c2.metric("Cartas del filtro individual", len(cartas_filtradas))
     c3.metric(
         "Pozos con diagnóstico robusto",
         int((resumen_robusto.get("Estado") == "Diagnóstico robusto").sum())
@@ -705,7 +770,43 @@ with tab_resumen:
     )
     c4.metric("Pozos con variación", variables)
 
-    st.subheader("Pozos por diagnóstico")
+    st.subheader("Pozos por diagnóstico robusto")
+    conteo_robustos = (
+        resumen_robusto_total.loc[
+            resumen_robusto_total["Pozo"].isin(pozos_filtrados),
+            ["Pozo", "Diagnosticos_Robustos_Lista"],
+        ]
+        .explode("Diagnosticos_Robustos_Lista")
+        .dropna(subset=["Diagnosticos_Robustos_Lista"])
+        .groupby("Diagnosticos_Robustos_Lista")["Pozo"]
+        .nunique()
+        .sort_values(ascending=False)
+        .rename("Cantidad_de_pozos")
+        .reset_index()
+        .rename(columns={"Diagnosticos_Robustos_Lista": "DiagnÃ³stico"})
+    )
+    fig_robustos = go.Figure(go.Bar(
+        x=conteo_robustos["Cantidad_de_pozos"],
+        y=conteo_robustos["DiagnÃ³stico"],
+        orientation="h",
+        marker_color="#0874d1",
+        text=conteo_robustos["Cantidad_de_pozos"],
+        textposition="outside",
+    ))
+    fig_robustos.update_layout(
+        height=max(320, 38 * len(conteo_robustos)),
+        yaxis=dict(autorange="reversed"),
+        xaxis_title="Pozos Ãºnicos con diagnÃ³stico robusto",
+        margin=dict(l=20, r=30, t=20, b=35),
+        template="plotly_white",
+    )
+    st.plotly_chart(
+        fig_robustos,
+        use_container_width=True,
+        key="resumen_diagnosticos_robustos",
+    )
+
+    st.subheader("Pozos por diagnóstico individual de carta")
     conteo_diagnosticos = (
         cartas_filtradas[["Pozo", "Diagnosticos_Todos"]]
         .explode("Diagnosticos_Todos")
@@ -732,7 +833,11 @@ with tab_resumen:
         margin=dict(l=20, r=30, t=20, b=35),
         template="plotly_white",
     )
-    st.plotly_chart(fig_conteo, use_container_width=True, key="resumen_diagnosticos")
+    st.plotly_chart(
+        fig_conteo,
+        use_container_width=True,
+        key="resumen_diagnosticos_individuales",
+    )
 
     st.subheader("Producción de los pozos filtrados")
     if ultimas.empty:
@@ -954,7 +1059,8 @@ with tab_descargas:
     st.subheader("Descargar resultados")
     st.caption(
         "Las descargas respetan los filtros actuales. El CSV de cartas "
-        "incluye todas las cartas de los pozos seleccionados."
+        "respeta también el filtro individual; el resumen por pozo conserva "
+        "el contexto completo de los pozos seleccionados."
     )
 
     exportacion_cartas = construir_exportacion_cartas(
@@ -967,7 +1073,7 @@ with tab_descargas:
     ).encode("utf-8-sig")
 
     resumen_pozos = construir_exportacion_pozos(
-        cartas_filtradas
+        cartas_contexto
     )
     csv_pozos = preparar_csv_descarga(resumen_pozos).to_csv(
         index=False,
