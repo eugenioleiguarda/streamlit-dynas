@@ -3830,7 +3830,7 @@ def procesar_json(origen, silencioso=True):
     # Área encerrada respecto del rectángulo envolvente de la carta.
     # Por debajo de este valor, ambas carreras recorren prácticamente
     # la misma trayectoria y se considera posible falta de trabajo.
-    UMBRAL_COMPACIDAD_SIN_TRABAJO = 0.13
+    UMBRAL_COMPACIDAD_SIN_TRABAJO = 0.16
 
 
     for _, metrica in metricas_cartas.iterrows():
