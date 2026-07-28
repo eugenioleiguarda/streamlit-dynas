@@ -601,7 +601,16 @@ if st.sidebar.button(
     use_container_width=True,
 ):
     st.cache_data.clear()
+    st.session_state["reprocesamiento_solicitado"] = True
     st.rerun()
+
+reprocesamiento_solicitado = bool(
+    st.session_state.get("reprocesamiento_solicitado", False)
+)
+if reprocesamiento_solicitado:
+    st.sidebar.info(
+        "Reprocesando todos los JSON con la versión actual…"
+    )
 
 archivos = st.sidebar.file_uploader(
     "Cargar uno o más JSON de la API",
@@ -658,6 +667,14 @@ with st.spinner("Procesando cartas, diagnósticos y VFM…"):
                 resultados_por_id[int(fila["CartaId"])] = fila
         except Exception as exc:
             errores_archivos.append(f"{archivo.name}: {exc}")
+
+if reprocesamiento_solicitado:
+    st.session_state["reprocesamiento_solicitado"] = False
+    st.sidebar.success("Reprocesamiento terminado.")
+    st.toast(
+        "Todos los archivos fueron reprocesados con el algoritmo actual.",
+        icon="✅",
+    )
 
 if not tablas:
     st.error("No fue posible procesar ninguno de los JSON.")
