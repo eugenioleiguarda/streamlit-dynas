@@ -4968,11 +4968,11 @@ def procesar_json(origen, silencioso=True):
             "Pozo_Subexplotado":
                 subexplotado,
             "Llenado_Bruto_pct":
-                llenado_bruto,
+                np.nan if sin_trabajo else llenado_bruto,
             "Llenado_Original_pct":
-                llenado,
+                np.nan if sin_trabajo else llenado,
             "Llenado_Operativo_pct":
-                llenado_operativo,
+                np.nan if sin_trabajo else llenado_operativo,
             "Sumergencia_Relativa_pct":
                 sumergencia_relativa,
             "Vacio_Superior_Izquierdo_pct":

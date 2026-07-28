@@ -34,7 +34,7 @@ st.set_page_config(
     layout="wide",
 )
 
-PIPELINE_CACHE_VERSION = "2026-07-28-consolidacion-diagnosticos-v9-reload"
+PIPELINE_CACHE_VERSION = "2026-07-28-sin-trabajo-sin-llenado-v10"
 
 COLORES = {
     "Posible pozo subexplotado": "#16833b",
@@ -214,7 +214,18 @@ def figura_carta(carta, resultado, diagnostico):
         fill="toself",
         fillcolor="rgba(92,150,190,.13)",
     ))
-    vertices = resultado.get("Vertices_Ideal") if resultado is not None else None
+    sin_trabajo = bool(
+        diagnostico.get("Sin_Trabajo_Bomba", False)
+    )
+    carta_no_valida = bool(
+        diagnostico.get("Carta_No_Valida", False)
+    )
+    mostrar_carta_ideal = not sin_trabajo and not carta_no_valida
+    vertices = (
+        resultado.get("Vertices_Ideal")
+        if resultado is not None and mostrar_carta_ideal
+        else None
+    )
     try:
         vertices = np.asarray(vertices, dtype=float)
         if vertices.ndim == 2 and len(vertices) >= 4:
