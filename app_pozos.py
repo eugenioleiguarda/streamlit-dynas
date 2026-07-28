@@ -288,6 +288,16 @@ st.caption(
     "y el detalle consolida la evolución de cada pozo."
 )
 
+st.sidebar.caption(
+    f"Versión del algoritmo: {PIPELINE_CACHE_VERSION}"
+)
+if st.sidebar.button(
+    "Reprocesar todos los archivos",
+    use_container_width=True,
+):
+    st.cache_data.clear()
+    st.rerun()
+
 archivos = st.sidebar.file_uploader(
     "Cargar uno o más JSON de la API",
     type=["json"],
