@@ -139,6 +139,8 @@ def construir_tabla_cartas(salida, produccion, controles):
         "CarreraMinimaBomba",
         "CarreraEfectivaBombaInicio",
         "CarreraEfectivaBombaFin",
+        "CarreraMaximaSuperficie",
+        "CarreraMinimaSuperficie",
     ]
     metadata = [c for c in metadata_posible if c in muestra.columns]
     tabla = diagnosticos.merge(
@@ -317,6 +319,51 @@ def carrera_bomba(fila):
     return np.nan
 
 
+def carrera_superficie(fila):
+    """Carrera de superficie informada por la API, en pulgadas."""
+    minima = pd.to_numeric(
+        pd.Series([fila.get("CarreraMinimaSuperficie")]),
+        errors="coerce",
+    ).iloc[0]
+    maxima = pd.to_numeric(
+        pd.Series([fila.get("CarreraMaximaSuperficie")]),
+        errors="coerce",
+    ).iloc[0]
+    if pd.notna(minima) and pd.notna(maxima):
+        return float(maxima - minima)
+    return np.nan
+
+
+def carrera_fondo_carta(carta):
+    """Recorrido de fondo de una carta: máximo menos mínimo, en pulgadas."""
+    posiciones = a_array(carta.get("Fondo_Posiciones"))
+    posiciones = posiciones[np.isfinite(posiciones)]
+    if len(posiciones) < 2:
+        return np.nan
+    return float(np.ptp(posiciones))
+
+
+def preparar_csv_descarga(tabla):
+    """Convierte listas y fechas a valores estables para descargar en CSV."""
+    salida = tabla.copy()
+    for columna in salida.columns:
+        if pd.api.types.is_datetime64_any_dtype(salida[columna]):
+            salida[columna] = salida[columna].dt.strftime(
+                "%Y-%m-%dT%H:%M:%S"
+            )
+        elif salida[columna].dtype == "object":
+            salida[columna] = salida[columna].map(
+                lambda valor: json.dumps(
+                    valor,
+                    ensure_ascii=False,
+                    default=str,
+                )
+                if isinstance(valor, (list, tuple, dict, np.ndarray))
+                else valor
+            )
+    return salida
+
+
 st.title("Diagnóstico de pozos y evolución de cartas")
 st.caption(
     "El resumen cuenta pozos únicos. El explorador conserva todas las cartas "
@@ -442,8 +489,13 @@ cartas_filtradas = historico.loc[
     historico["Pozo"].isin(pozos_filtrados)
 ].sort_values(["Pozo", "Fecha"], ascending=[True, False])
 
-tab_resumen, tab_explorador, tab_detalle = st.tabs(
-    ["Resumen por pozo", "Explorador de cartas", "Detalle del pozo"]
+tab_resumen, tab_explorador, tab_detalle, tab_descargas = st.tabs(
+    [
+        "Resumen por pozo",
+        "Explorador de cartas",
+        "Detalle del pozo",
+        "Descargas",
+    ]
 )
 
 with tab_resumen:
@@ -571,6 +623,8 @@ with tab_explorador:
                         f"{valor_texto(diag.get('Llenado_Operativo_pct'), '.1f', '%')} · "
                         "Sumergencia "
                         f"{valor_texto(diag.get('Sumergencia_Relativa_pct'), '.1f', '%')} · "
+                        "Carrera fondo "
+                        f"{valor_texto(carrera_fondo_carta(cartas_por_id[carta_id]), '.1f', ' pulg')} · "
                         "VFM bruto "
                         f"{valor_texto(diag.get('VFM_Bruta_m3_d'), '.2f', ' m³/d')} · "
                         "VFM petróleo "
@@ -620,7 +674,10 @@ with tab_detalle:
         ultima = cartas_pozo.iloc[0]
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Régimen de bombeo", valor_texto(ultima.get("GPM"), ".2f", " GPM"))
-        m2.metric("Carrera de fondo", valor_texto(carrera_bomba(ultima), ".1f"))
+        m2.metric(
+            "Carrera de superficie (API)",
+            valor_texto(carrera_superficie(ultima), ".1f", " pulg"),
+        )
         m3.metric("Profundidad de bomba", valor_texto(ultima.get("ProfundidadBomba"), ".0f", " m"))
         m4.metric("Diámetro de pistón", valor_texto(ultima.get("DiametroPistonBomba"), ".2f", " in"))
 
@@ -704,6 +761,8 @@ with tab_detalle:
                     )
                     st.caption(
                         f"Fecha: {pd.to_datetime(diag['Fecha']).strftime('%d/%m/%Y %H:%M')}  \n"
+                        f"Carrera de fondo: "
+                        f"{valor_texto(carrera_fondo_carta(cartas_por_id[carta_id]), '.1f', ' pulg')}  \n"
                         f"Llenado operativo: {valor_texto(diag.get('Llenado_Operativo_pct'), '.1f', '%')} · "
                         f"Sumergencia: {valor_texto(diag.get('Sumergencia_Relativa_pct'), '.1f', '%')}  \n"
                         f"Torque: {valor_texto(diag.get('Torque_Reductor_pct'), '.1f', '%')} · "
@@ -711,6 +770,52 @@ with tab_detalle:
                         f"Acción: {diag.get('Accion_Sugerida', '—')}  \n"
                         f"VFM/control: {diag.get('Comentario_VFM_Control', 'Sin comparación disponible')}"
                     )
+
+with tab_descargas:
+    st.subheader("Descargar resultados")
+    st.caption(
+        "Las descargas respetan los filtros actuales. El CSV de cartas "
+        "incluye todas las cartas de los pozos seleccionados."
+    )
+
+    csv_cartas = preparar_csv_descarga(cartas_filtradas).to_csv(
+        index=False,
+        sep=";",
+        decimal=",",
+    ).encode("utf-8-sig")
+
+    resumen_pozos = (
+        cartas_filtradas.sort_values("Fecha")
+        .drop_duplicates("Pozo", keep="last")
+        .copy()
+    )
+    csv_pozos = preparar_csv_descarga(resumen_pozos).to_csv(
+        index=False,
+        sep=";",
+        decimal=",",
+    ).encode("utf-8-sig")
+
+    d1, d2 = st.columns(2)
+    with d1:
+        st.metric("Cartas incluidas", len(cartas_filtradas))
+        st.download_button(
+            "Descargar CSV de cartas",
+            data=csv_cartas,
+            file_name="diagnostico_cartas_filtradas.csv",
+            mime="text/csv",
+            key="descargar_csv_cartas",
+            use_container_width=True,
+        )
+    with d2:
+        st.metric("Pozos incluidos", len(resumen_pozos))
+        st.download_button(
+            "Descargar CSV resumen por pozo",
+            data=csv_pozos,
+            file_name="diagnostico_resumen_pozos.csv",
+            mime="text/csv",
+            key="descargar_csv_pozos",
+            use_container_width=True,
+        )
 
 if errores_archivos:
     with st.sidebar.expander("Archivos con errores"):
