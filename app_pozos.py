@@ -24,7 +24,7 @@ st.set_page_config(
     layout="wide",
 )
 
-PIPELINE_CACHE_VERSION = "2026-07-28-compacidad-16-v4"
+PIPELINE_CACHE_VERSION = "2026-07-28-admision-derecha-v5"
 
 COLORES = {
     "Posible pozo subexplotado": "#16833b",
