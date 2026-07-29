@@ -448,6 +448,273 @@ def analizar_subexplotacion_temporal(indicadores):
     }
 
 
+def analizar_falta_aporte_temporal(
+    indicadores,
+    diagnostico_robusto="",
+):
+    """
+    Califica la evolución temporal de pozos con golpe de fluido o gas.
+
+    No reemplaza el diagnóstico de las cartas. Determina si la restricción
+    de aporte se agrava, permanece estable o muestra recuperación.
+    """
+    insuficiente = {
+        "estado": "Evidencia temporal insuficiente",
+        "color": "#e87918",
+        "confianza": "Insuficiente",
+        "evidencias": [],
+    }
+    if indicadores is None or indicadores.empty:
+        insuficiente["evidencias"] = [
+            "No se cargaron tendencias históricas válidas."
+        ]
+        return insuficiente
+
+    por_variable = {
+        fila["Variable"]: fila
+        for _, fila in indicadores.iterrows()
+    }
+    nombres = {
+        "peso": "Peso de fluido promedio",
+        "apertura": "Apertura de cargas de fondo",
+        "llenado": "Llenado de bomba",
+        "sumergencia": "Sumergencia relativa API",
+        "eficiencia": "Eficiencia de carrera fondo/superficie",
+    }
+    filas = {
+        clave: por_variable.get(nombre)
+        for clave, nombre in nombres.items()
+    }
+    suficientes = [
+        fila for fila in filas.values()
+        if fila is not None
+        and pd.notna(fila.get("Días_con_datos"))
+        and float(fila["Días_con_datos"]) >= 8
+    ]
+    if (
+        len(suficientes) < 3
+        or filas["llenado"] is None
+        or filas["sumergencia"] is None
+    ):
+        faltantes = [
+            nombre for clave, nombre in nombres.items()
+            if filas[clave] is None
+            or pd.isna(filas[clave].get("Días_con_datos"))
+            or float(filas[clave]["Días_con_datos"]) < 8
+        ]
+        insuficiente["evidencias"] = [
+            "Se requieren al menos 8 días válidos en tres variables críticas.",
+            "Deben estar disponibles llenado y sumergencia relativa.",
+            "Cobertura insuficiente: " + ", ".join(faltantes),
+        ]
+        return insuficiente
+
+    def numero(fila, columna):
+        if fila is None:
+            return np.nan
+        valor = fila.get(columna, np.nan)
+        return float(valor) if pd.notna(valor) else np.nan
+
+    peso = filas["peso"]
+    apertura = filas["apertura"]
+    llenado = filas["llenado"]
+    sumergencia = filas["sumergencia"]
+    eficiencia = filas["eficiencia"]
+
+    peso_pend = numero(peso, "Pendiente_relativa_pct_día")
+    peso_cambio = numero(peso, "Cambio_3d_vs_12d_pct")
+    peso_vol = numero(peso, "Volatilidad_MAD_pct")
+    apertura_pend = numero(apertura, "Pendiente_relativa_pct_día")
+    apertura_cambio = numero(apertura, "Cambio_3d_vs_12d_pct")
+    apertura_vol = numero(apertura, "Volatilidad_MAD_pct")
+    llenado_ultimo = numero(llenado, "Último")
+    llenado_pend = numero(llenado, "Pendiente_por_día")
+    llenado_cambio = numero(llenado, "Cambio_3d_vs_12d")
+    llenado_vol = numero(llenado, "Volatilidad_MAD_pct")
+    sum_ultimo = numero(sumergencia, "Último")
+    sum_pend = numero(sumergencia, "Pendiente_por_día")
+    sum_cambio = numero(sumergencia, "Cambio_3d_vs_12d")
+    eficiencia_pend = numero(eficiencia, "Pendiente_relativa_pct_día")
+    eficiencia_cambio = numero(eficiencia, "Cambio_3d_vs_12d_pct")
+
+    peso_sube = (
+        np.isfinite(peso_pend) and peso_pend > 0.15
+    ) or (
+        np.isfinite(peso_cambio) and peso_cambio > 2.0
+    )
+    peso_baja = (
+        np.isfinite(peso_pend) and peso_pend < -0.15
+    ) or (
+        np.isfinite(peso_cambio) and peso_cambio < -2.0
+    )
+    apertura_sube = (
+        np.isfinite(apertura_pend) and apertura_pend > 0.20
+    ) or (
+        np.isfinite(apertura_cambio) and apertura_cambio > 3.0
+    )
+    apertura_baja = (
+        np.isfinite(apertura_pend) and apertura_pend < -0.20
+    ) or (
+        np.isfinite(apertura_cambio) and apertura_cambio < -3.0
+    )
+    llenado_baja = (
+        np.isfinite(llenado_pend) and llenado_pend < -0.15
+    ) or (
+        np.isfinite(llenado_cambio) and llenado_cambio < -2.0
+    )
+    llenado_sube = (
+        np.isfinite(llenado_pend) and llenado_pend > 0.15
+    ) or (
+        np.isfinite(llenado_cambio) and llenado_cambio > 2.0
+    )
+    sumergencia_baja = (
+        np.isfinite(sum_ultimo) and sum_ultimo <= 10.0
+    )
+    sumergencia_desciende = (
+        np.isfinite(sum_pend) and sum_pend < -0.10
+    ) or (
+        np.isfinite(sum_cambio) and sum_cambio < -1.0
+    )
+    sumergencia_sube = (
+        np.isfinite(sum_pend) and sum_pend > 0.10
+    ) or (
+        np.isfinite(sum_cambio) and sum_cambio > 1.0
+    )
+    eficiencia_baja = (
+        np.isfinite(eficiencia_pend) and eficiencia_pend < -0.03
+    ) or (
+        np.isfinite(eficiencia_cambio) and eficiencia_cambio < -0.5
+    )
+    eficiencia_sube = (
+        np.isfinite(eficiencia_pend) and eficiencia_pend > 0.03
+    ) or (
+        np.isfinite(eficiencia_cambio) and eficiencia_cambio > 0.5
+    )
+    llenado_restringido = (
+        np.isfinite(llenado_ultimo) and llenado_ultimo < 90.0
+    )
+    llenado_critico = (
+        np.isfinite(llenado_ultimo) and llenado_ultimo < 70.0
+    )
+    volatil = (
+        (np.isfinite(peso_vol) and peso_vol > 6.0)
+        or (np.isfinite(apertura_vol) and apertura_vol > 8.0)
+        or (np.isfinite(llenado_vol) and llenado_vol > 8.0)
+    )
+
+    signos_deterioro = sum([
+        llenado_baja,
+        sumergencia_desciende,
+        peso_sube,
+        apertura_sube,
+        eficiencia_baja,
+    ])
+    signos_recuperacion = sum([
+        llenado_sube,
+        sumergencia_sube,
+        peso_baja,
+        apertura_baja,
+        eficiencia_sube,
+    ])
+
+    evidencias = [
+        (
+            f"Llenado API actual: {llenado_ultimo:.1f}%; "
+            f"tendencia {llenado_pend:+.2f} pp/día."
+        ),
+        (
+            f"Sumergencia relativa API actual: {sum_ultimo:.1f}%; "
+            f"tendencia {sum_pend:+.2f} pp/día."
+        ),
+    ]
+    if np.isfinite(peso_pend):
+        evidencias.append(
+            f"Peso de fluido: {peso_pend:+.2f}%/día; "
+            f"cambio reciente {peso_cambio:+.2f}%."
+        )
+    if np.isfinite(apertura_pend):
+        evidencias.append(
+            f"Apertura de cargas: {apertura_pend:+.2f}%/día; "
+            f"cambio reciente {apertura_cambio:+.2f}%."
+        )
+    if np.isfinite(eficiencia_pend):
+        evidencias.append(
+            "Eficiencia de carrera fondo/superficie: "
+            f"{eficiencia_pend:+.2f}%/día."
+        )
+
+    if volatil:
+        estado, color, confianza = (
+            "Comportamiento temporal volátil",
+            "#9333ea",
+            "Media",
+        )
+    elif (
+        signos_deterioro >= 3
+        and llenado_restringido
+        and (
+            sumergencia_baja
+            or llenado_critico
+            or sumergencia_desciende
+        )
+    ):
+        estado, color, confianza = (
+            "Restricción de aporte agravándose",
+            "#dc2626",
+            "Alta",
+        )
+    elif (
+        signos_recuperacion >= 3
+        and llenado_sube
+        and sumergencia_sube
+    ):
+        estado, color, confianza = (
+            "Evidencia temporal de recuperación",
+            "#16833b",
+            "Alta",
+        )
+    elif (
+        llenado_restringido
+        and signos_deterioro <= 1
+        and signos_recuperacion <= 1
+    ):
+        estado, color, confianza = (
+            "Restricción de aporte estable",
+            "#e87918",
+            "Media",
+        )
+    elif signos_deterioro >= 2:
+        estado, color, confianza = (
+            "Posible deterioro de la admisión",
+            "#f97316",
+            "Media",
+        )
+    elif signos_recuperacion >= 2:
+        estado, color, confianza = (
+            "Posible recuperación de la admisión",
+            "#0284c7",
+            "Media",
+        )
+    else:
+        estado, color, confianza = (
+            "Evolución temporal no concluyente",
+            "#64748b",
+            "Media",
+        )
+
+    if diagnostico_robusto:
+        evidencias.insert(
+            0,
+            f"Diagnóstico robusto de cartas: {diagnostico_robusto}.",
+        )
+    return {
+        "estado": estado,
+        "color": color,
+        "confianza": confianza,
+        "evidencias": evidencias,
+    }
+
+
 def a_array(valor):
     """Convierte listas del JSON o listas serializadas a arrays float."""
     if valor is None:

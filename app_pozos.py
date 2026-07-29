@@ -35,6 +35,9 @@ calcular_indicadores_moviles_15d = (
 analizar_subexplotacion_temporal = (
     pipeline_diagnostico_modulo.analizar_subexplotacion_temporal
 )
+analizar_falta_aporte_temporal = (
+    pipeline_diagnostico_modulo.analizar_falta_aporte_temporal
+)
 
 
 st.set_page_config(
@@ -44,7 +47,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-07-29-refactor-tendencias-pipeline-v14"
+    "2026-07-29-tendencias-falta-aporte-v15"
 )
 
 COLORES = {
@@ -1198,6 +1201,42 @@ with tab_detalle:
                 """,
                 unsafe_allow_html=True,
             )
+        elif estado == "Diagnóstico robusto":
+            diagnosticos_aporte = [
+                diagnostico
+                for diagnostico in [
+                    "Posible golpe de fluido",
+                    "Posible compresión/interferencia de gas",
+                ]
+                if diagnostico in texto_estado
+            ]
+            if diagnosticos_aporte:
+                etiqueta_aporte = " / ".join(diagnosticos_aporte)
+                analisis_temporal = analizar_falta_aporte_temporal(
+                    indicadores_15d,
+                    diagnostico_robusto=etiqueta_aporte,
+                )
+                evidencias_html = "".join(
+                    f"<li>{evidencia}</li>"
+                    for evidencia in analisis_temporal["evidencias"]
+                )
+                st.markdown(
+                    f"""
+                    <div style="border-left:6px solid {analisis_temporal['color']};
+                                padding:10px 14px;margin-top:10px;
+                                background:rgba(128,128,128,.08);border-radius:6px;">
+                        <b>Análisis temporal de admisión</b><br>
+                        <span style="font-size:1.08rem;">
+                            {etiqueta_aporte} — {analisis_temporal['estado'].lower()}
+                        </span><br>
+                        <small>Confianza temporal: {analisis_temporal['confianza']}</small>
+                        <ul style="margin-top:8px;margin-bottom:0;">
+                            {evidencias_html}
+                        </ul>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
         ultima = cartas_pozo.iloc[0]
         m1, m2, m3, m4 = st.columns(4)
