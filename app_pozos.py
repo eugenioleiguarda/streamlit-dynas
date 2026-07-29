@@ -214,6 +214,196 @@ def figura_tendencia_diaria(
     return figura
 
 
+def _pendiente_theil_sen(
+    dias: np.ndarray,
+    valores: np.ndarray,
+) -> float:
+    """Pendiente robusta como mediana de todas las pendientes entre pares."""
+    pendientes = []
+    for i in range(len(valores) - 1):
+        delta_dias = dias[i + 1:] - dias[i]
+        delta_valores = valores[i + 1:] - valores[i]
+        validos = delta_dias > 0
+        if np.any(validos):
+            pendientes.extend(
+                (delta_valores[validos] / delta_dias[validos]).tolist()
+            )
+
+    return (
+        float(np.median(pendientes))
+        if pendientes
+        else np.nan
+    )
+
+
+def calcular_indicadores_moviles_15d(
+    tabla: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Resume tendencias sobre una ventana de 15 días.
+
+    Primero consolida cada variable mediante su mediana diaria para que
+    los días con mayor frecuencia de adquisición no pesen más.
+    """
+    if tabla.empty:
+        return pd.DataFrame()
+
+    trabajo = tabla.copy()
+    trabajo["Fecha"] = pd.to_datetime(
+        trabajo["Fecha"],
+        errors="coerce",
+    )
+    trabajo = trabajo.dropna(subset=["Fecha"])
+    if trabajo.empty:
+        return pd.DataFrame()
+
+    # Variables derivadas útiles para el análisis mecánico y de bombeo.
+    if {
+        "Carga_Maxima_Fondo_lbf",
+        "Carga_Minima_Fondo_lbf",
+    }.issubset(trabajo.columns):
+        trabajo["Rango_Carga_Fondo_lbf"] = (
+            trabajo["Carga_Maxima_Fondo_lbf"]
+            - trabajo["Carga_Minima_Fondo_lbf"]
+        )
+
+    if {
+        "Carrera_Fondo_Total_pulg",
+        "Carrera_Superficie_pulg",
+    }.issubset(trabajo.columns):
+        superficie = pd.to_numeric(
+            trabajo["Carrera_Superficie_pulg"],
+            errors="coerce",
+        )
+        trabajo["Eficiencia_Carrera_pct"] = np.where(
+            superficie.abs() > 1e-9,
+            100
+            * pd.to_numeric(
+                trabajo["Carrera_Fondo_Total_pulg"],
+                errors="coerce",
+            )
+            / superficie,
+            np.nan,
+        )
+
+    variables = [
+        ("Llenado_Bomba_API_pct", "Llenado de bomba", "%"),
+        ("Peso_Fluido_Promedio_lbf", "Peso de fluido promedio", "lbf"),
+        ("Carga_Maxima_Fondo_lbf", "Carga máxima de fondo", "lbf"),
+        ("Carga_Minima_Fondo_lbf", "Carga mínima de fondo", "lbf"),
+        ("Rango_Carga_Fondo_lbf", "Apertura de cargas de fondo", "lbf"),
+        ("Carrera_Fondo_Total_pulg", "Carrera de fondo", "pulg"),
+        ("Carrera_Superficie_pulg", "Carrera de superficie", "pulg"),
+        ("Eficiencia_Carrera_pct", "Eficiencia de carrera fondo/superficie", "%"),
+        ("Torque_Reductor_pct", "Torque reductor", "%"),
+        ("Carga_Estructural_pct", "Carga estructural", "%"),
+    ]
+
+    fecha_final = trabajo["Fecha"].max()
+    fecha_inicial = fecha_final - pd.Timedelta(days=15)
+    ventana = trabajo.loc[
+        trabajo["Fecha"] > fecha_inicial
+    ].copy()
+    ventana["Dia"] = ventana["Fecha"].dt.floor("D")
+
+    filas = []
+    for columna, etiqueta, unidad in variables:
+        if (
+            columna not in ventana.columns
+            or not ventana[columna].notna().any()
+        ):
+            continue
+
+        datos_crudos = (
+            ventana[["Fecha", "Dia", columna]]
+            .dropna()
+            .sort_values("Fecha")
+        )
+        diaria = (
+            datos_crudos
+            .groupby("Dia", as_index=False)[columna]
+            .median()
+            .sort_values("Dia")
+        )
+
+        valores = diaria[columna].to_numpy(dtype=float)
+        dias = (
+            (diaria["Dia"] - diaria["Dia"].min())
+            .dt.total_seconds()
+            .to_numpy(dtype=float)
+            / 86400.0
+        )
+
+        mediana = float(np.median(valores))
+        mad = float(np.median(np.abs(valores - mediana)))
+        volatilidad_relativa = (
+            100 * 1.4826 * mad / abs(mediana)
+            if abs(mediana) > 1e-9
+            else np.nan
+        )
+        pendiente = _pendiente_theil_sen(dias, valores)
+        pendiente_relativa = (
+            100 * pendiente / abs(mediana)
+            if np.isfinite(pendiente)
+            and abs(mediana) > 1e-9
+            else np.nan
+        )
+
+        fecha_corte_3d = fecha_final.floor("D") - pd.Timedelta(days=2)
+        ultimos_3 = diaria.loc[
+            diaria["Dia"] >= fecha_corte_3d,
+            columna,
+        ]
+        anteriores_12 = diaria.loc[
+            diaria["Dia"] < fecha_corte_3d,
+            columna,
+        ]
+        cambio_3_vs_12 = (
+            float(np.median(ultimos_3) - np.median(anteriores_12))
+            if not ultimos_3.empty and not anteriores_12.empty
+            else np.nan
+        )
+        base_12 = (
+            float(np.median(anteriores_12))
+            if not anteriores_12.empty
+            else np.nan
+        )
+        cambio_3_vs_12_pct = (
+            100 * cambio_3_vs_12 / abs(base_12)
+            if np.isfinite(cambio_3_vs_12)
+            and np.isfinite(base_12)
+            and abs(base_12) > 1e-9
+            else np.nan
+        )
+
+        dias_con_datos = int(len(diaria))
+        if dias_con_datos >= 12:
+            calidad = "Alta"
+        elif dias_con_datos >= 8:
+            calidad = "Media"
+        elif dias_con_datos >= 5:
+            calidad = "Baja"
+        else:
+            calidad = "Insuficiente"
+
+        filas.append({
+            "Variable": etiqueta,
+            "Unidad": unidad,
+            "Último": float(datos_crudos[columna].iloc[-1]),
+            "Mediana_15d": mediana,
+            "Pendiente_por_día": pendiente,
+            "Pendiente_relativa_pct_día": pendiente_relativa,
+            "Volatilidad_MAD_pct": volatilidad_relativa,
+            "Cambio_3d_vs_12d": cambio_3_vs_12,
+            "Cambio_3d_vs_12d_pct": cambio_3_vs_12_pct,
+            "Días_con_datos": dias_con_datos,
+            "Mediciones": int(len(datos_crudos)),
+            "Calidad": calidad,
+        })
+
+    return pd.DataFrame(filas)
+
+
 def fecha_referencia_json(contenido: bytes):
     try:
         respuesta = json.loads(contenido.decode("utf-8-sig"))
@@ -1230,6 +1420,39 @@ with tab_detalle:
                 f"{fecha_maxima:%d/%m/%Y %H:%M}. "
                 "Los gráficos muestran todas las mediciones recibidas."
             )
+
+            indicadores_15d = calcular_indicadores_moviles_15d(
+                tendencias_pozo
+            )
+            st.markdown("#### Indicadores móviles de los últimos 15 días")
+            if indicadores_15d.empty:
+                st.info(
+                    "No hay suficientes variables numéricas para calcular "
+                    "los indicadores móviles."
+                )
+            else:
+                st.dataframe(
+                    indicadores_15d.round(2),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+                with st.expander(
+                    "Cómo interpretar estos indicadores",
+                    expanded=False,
+                ):
+                    st.markdown(
+                        """
+- **Mediana 15d:** nivel central robusto de las medianas diarias.
+- **Pendiente por día:** tendencia robusta Theil–Sen en unidades por día.
+- **Pendiente relativa:** cambio diario respecto de la mediana de la ventana.
+- **Volatilidad MAD:** dispersión robusta, menos sensible a valores extremos.
+- **Cambio 3d vs 12d:** mediana de los últimos tres días menos la de los días anteriores.
+- **Calidad:** depende de la cantidad de días distintos con información.
+
+Los cálculos usan medianas diarias para que un día con muchas mediciones
+no tenga más peso que otro. Todavía no se aplican umbrales diagnósticos.
+                        """
+                    )
 
             g1, g2 = st.columns(2)
             with g1:
