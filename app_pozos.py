@@ -153,7 +153,7 @@ def figura_tendencia_diaria(
     titulo: str,
     unidad: str,
 ):
-    """Grafica la mediana diaria de una o más variables compatibles."""
+    """Grafica todas las mediciones disponibles en orden cronológico."""
     figura = go.Figure()
 
     if tabla.empty:
@@ -167,34 +167,25 @@ def figura_tendencia_diaria(
     ]
 
     for columna, etiqueta, color in disponibles:
-        diaria = (
+        mediciones = (
             tabla[["Fecha", columna]]
             .dropna()
-            .assign(
-                Dia=lambda x: x["Fecha"].dt.floor("D")
-            )
-            .groupby("Dia", as_index=False)
-            .agg(
-                Valor=(columna, "median"),
-                Mediciones=(columna, "count"),
-            )
+            .sort_values("Fecha")
         )
 
         figura.add_trace(
-            go.Scatter(
-                x=diaria["Dia"],
-                y=diaria["Valor"],
+            go.Scattergl(
+                x=mediciones["Fecha"],
+                y=mediciones[columna],
                 mode="lines+markers",
                 name=etiqueta,
-                line=dict(color=color, width=2.5),
-                marker=dict(size=7),
-                customdata=diaria[["Mediciones"]],
+                line=dict(color=color, width=1.5),
+                marker=dict(size=5, opacity=0.75),
                 hovertemplate=(
-                    "%{x|%d/%m/%Y}<br>"
+                    "%{x|%d/%m/%Y %H:%M:%S}<br>"
                     + etiqueta
                     + ": %{y:.2f} "
                     + unidad
-                    + "<br>Mediciones: %{customdata[0]}"
                     + "<extra></extra>"
                 ),
             )
@@ -1237,7 +1228,7 @@ with tab_detalle:
                 f"{len(tendencias_pozo)} mediciones entre "
                 f"{fecha_minima:%d/%m/%Y %H:%M} y "
                 f"{fecha_maxima:%d/%m/%Y %H:%M}. "
-                "Los gráficos muestran la mediana diaria."
+                "Los gráficos muestran todas las mediciones recibidas."
             )
 
             g1, g2 = st.columns(2)
