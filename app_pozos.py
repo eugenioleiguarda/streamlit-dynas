@@ -300,9 +300,15 @@ def calcular_indicadores_moviles_15d(
     ]
 
     fecha_final = trabajo["Fecha"].max()
-    fecha_inicial = fecha_final - pd.Timedelta(days=15)
+    # Quince fechas calendario exactas: el día más reciente y los
+    # catorce anteriores. Restar 15 días desde la hora máxima podía
+    # incorporar parcialmente una decimosexta fecha.
+    fecha_inicial = (
+        fecha_final.floor("D")
+        - pd.Timedelta(days=14)
+    )
     ventana = trabajo.loc[
-        trabajo["Fecha"] > fecha_inicial
+        trabajo["Fecha"] >= fecha_inicial
     ].copy()
     ventana["Dia"] = ventana["Fecha"].dt.floor("D")
 
