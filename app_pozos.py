@@ -90,6 +90,139 @@ def ejecutar_controles(contenido: bytes | None):
     return leer_controles(contenido)
 
 
+@st.cache_data(show_spinner=False)
+def leer_tendencias(contenido: bytes | None):
+    """Lee el CSV histórico generado por descargar_tendencias_30_dias.ps1."""
+    if contenido is None:
+        return pd.DataFrame()
+
+    from io import BytesIO
+
+    tabla = pd.read_csv(
+        BytesIO(contenido),
+        sep=";",
+        encoding="utf-8-sig",
+    )
+
+    obligatorias = {"Pozo", "Fecha"}
+    faltantes = obligatorias.difference(tabla.columns)
+    if faltantes:
+        raise ValueError(
+            "El CSV de tendencias no contiene: "
+            + ", ".join(sorted(faltantes))
+        )
+
+    tabla["Fecha"] = pd.to_datetime(
+        tabla["Fecha"],
+        errors="coerce",
+    )
+    tabla = tabla.dropna(
+        subset=["Pozo", "Fecha"]
+    ).copy()
+    tabla["Pozo_Clave"] = tabla["Pozo"].map(
+        normalizar_pozo
+    )
+
+    for columna in tabla.columns:
+        if columna in {
+            "CartaId",
+            "Pozo",
+            "Fecha",
+            "Pozo_Clave",
+        }:
+            continue
+
+        tabla[columna] = pd.to_numeric(
+            tabla[columna]
+                .astype(str)
+                .str.replace(",", ".", regex=False),
+            errors="coerce",
+        )
+
+    return (
+        tabla
+        .sort_values(["Pozo", "Fecha"])
+        .drop_duplicates("CartaId", keep="last")
+        .reset_index(drop=True)
+    )
+
+
+def figura_tendencia_diaria(
+    tabla: pd.DataFrame,
+    series: list[tuple[str, str, str]],
+    titulo: str,
+    unidad: str,
+):
+    """Grafica la mediana diaria de una o más variables compatibles."""
+    figura = go.Figure()
+
+    if tabla.empty:
+        return figura
+
+    disponibles = [
+        (columna, etiqueta, color)
+        for columna, etiqueta, color in series
+        if columna in tabla.columns
+        and tabla[columna].notna().any()
+    ]
+
+    for columna, etiqueta, color in disponibles:
+        diaria = (
+            tabla[["Fecha", columna]]
+            .dropna()
+            .assign(
+                Dia=lambda x: x["Fecha"].dt.floor("D")
+            )
+            .groupby("Dia", as_index=False)
+            .agg(
+                Valor=(columna, "median"),
+                Mediciones=(columna, "count"),
+            )
+        )
+
+        figura.add_trace(
+            go.Scatter(
+                x=diaria["Dia"],
+                y=diaria["Valor"],
+                mode="lines+markers",
+                name=etiqueta,
+                line=dict(color=color, width=2.5),
+                marker=dict(size=7),
+                customdata=diaria[["Mediciones"]],
+                hovertemplate=(
+                    "%{x|%d/%m/%Y}<br>"
+                    + etiqueta
+                    + ": %{y:.2f} "
+                    + unidad
+                    + "<br>Mediciones: %{customdata[0]}"
+                    + "<extra></extra>"
+                ),
+            )
+        )
+
+    figura.update_layout(
+        title=titulo,
+        height=350,
+        hovermode="x unified",
+        xaxis_title="Fecha",
+        yaxis_title=(
+            f"{titulo} [{unidad}]"
+            if unidad
+            else titulo
+        ),
+        legend=dict(
+            orientation="h",
+            y=1.14,
+            x=1,
+            xanchor="right",
+        ),
+        margin=dict(l=45, r=25, t=70, b=40),
+        template="plotly_white",
+    )
+
+    return figura
+
+
 def fecha_referencia_json(contenido: bytes):
     try:
         respuesta = json.loads(contenido.decode("utf-8-sig"))
@@ -621,6 +754,14 @@ archivo_controles = st.sidebar.file_uploader(
     type=["xlsx"],
     help="Si no se carga un Excel se utiliza controles_reales.xlsx del repositorio.",
 )
+archivo_tendencias = st.sidebar.file_uploader(
+    "Cargar tendencias históricas (opcional)",
+    type=["csv"],
+    help=(
+        "CSV generado por descargar_tendencias_30_dias.ps1. "
+        "Se utiliza únicamente para los gráficos históricos."
+    ),
+)
 if not archivos:
     st.info("Cargá uno o más JSON desde la barra lateral.")
     st.stop()
@@ -631,6 +772,17 @@ try:
     )
 except Exception as exc:
     st.error("No fue posible leer los controles reales.")
+    st.exception(exc)
+    st.stop()
+
+try:
+    tendencias = leer_tendencias(
+        archivo_tendencias.getvalue()
+        if archivo_tendencias is not None
+        else None
+    )
+except Exception as exc:
+    st.error("No fue posible leer el CSV de tendencias.")
     st.exception(exc)
     st.stop()
 
@@ -1060,6 +1212,171 @@ with tab_detalle:
             st.caption(
                 f"{len(controles_pozo)} control(es) real(es) disponible(s) para este pozo."
             )
+
+        st.subheader("Tendencias históricas de operación")
+        tendencias_pozo = (
+            tendencias.loc[
+                tendencias["Pozo_Clave"]
+                == normalizar_pozo(pozo)
+            ]
+            .sort_values("Fecha")
+            .copy()
+            if not tendencias.empty
+            else pd.DataFrame()
+        )
+
+        if tendencias_pozo.empty:
+            st.info(
+                "Cargá el CSV histórico de tendencias desde la barra "
+                "lateral para visualizar estas variables."
+            )
+        else:
+            fecha_minima = tendencias_pozo["Fecha"].min()
+            fecha_maxima = tendencias_pozo["Fecha"].max()
+            st.caption(
+                f"{len(tendencias_pozo)} mediciones entre "
+                f"{fecha_minima:%d/%m/%Y %H:%M} y "
+                f"{fecha_maxima:%d/%m/%Y %H:%M}. "
+                "Los gráficos muestran la mediana diaria."
+            )
+
+            g1, g2 = st.columns(2)
+            with g1:
+                st.plotly_chart(
+                    figura_tendencia_diaria(
+                        tendencias_pozo,
+                        [
+                            (
+                                "Llenado_Bomba_API_pct",
+                                "Llenado de bomba",
+                                "#16833b",
+                            ),
+                        ],
+                        "Llenado de bomba",
+                        "%",
+                    ),
+                    use_container_width=True,
+                    key=f"tendencia_llenado_{pozo}",
+                )
+            with g2:
+                st.plotly_chart(
+                    figura_tendencia_diaria(
+                        tendencias_pozo,
+                        [
+                            (
+                                "Peso_Fluido_Promedio_lbf",
+                                "Peso promedio",
+                                "#2563eb",
+                            ),
+                            (
+                                "Peso_Fluido_Max_lbf",
+                                "Peso máximo",
+                                "#7c3aed",
+                            ),
+                        ],
+                        "Peso de fluido",
+                        "lbf",
+                    ),
+                    use_container_width=True,
+                    key=f"tendencia_peso_{pozo}",
+                )
+
+            g3, g4 = st.columns(2)
+            with g3:
+                st.plotly_chart(
+                    figura_tendencia_diaria(
+                        tendencias_pozo,
+                        [
+                            (
+                                "Carga_Maxima_Fondo_lbf",
+                                "Máxima fondo",
+                                "#dc2626",
+                            ),
+                            (
+                                "Carga_Minima_Fondo_lbf",
+                                "Mínima fondo",
+                                "#f59e0b",
+                            ),
+                        ],
+                        "Cargas de fondo",
+                        "lbf",
+                    ),
+                    use_container_width=True,
+                    key=f"tendencia_cargas_fondo_{pozo}",
+                )
+            with g4:
+                st.plotly_chart(
+                    figura_tendencia_diaria(
+                        tendencias_pozo,
+                        [
+                            (
+                                "Carrera_Fondo_Total_pulg",
+                                "Fondo total",
+                                "#0f766e",
+                            ),
+                            (
+                                "Carrera_Fondo_Efectiva_pulg",
+                                "Fondo efectiva",
+                                "#14b8a6",
+                            ),
+                            (
+                                "Carrera_Superficie_pulg",
+                                "Superficie",
+                                "#0284c7",
+                            ),
+                        ],
+                        "Carreras",
+                        "pulg",
+                    ),
+                    use_container_width=True,
+                    key=f"tendencia_carreras_{pozo}",
+                )
+
+            g5, g6 = st.columns(2)
+            with g5:
+                st.plotly_chart(
+                    figura_tendencia_diaria(
+                        tendencias_pozo,
+                        [
+                            (
+                                "Torque_Reductor_pct",
+                                "Torque reductor",
+                                "#e11d48",
+                            ),
+                            (
+                                "Carga_Estructural_pct",
+                                "Carga estructural",
+                                "#9333ea",
+                            ),
+                        ],
+                        "Condición de superficie",
+                        "%",
+                    ),
+                    use_container_width=True,
+                    key=f"tendencia_superficie_pct_{pozo}",
+                )
+            with g6:
+                st.plotly_chart(
+                    figura_tendencia_diaria(
+                        tendencias_pozo,
+                        [
+                            (
+                                "Carga_Maxima_Superficie_lbf",
+                                "Máxima superficie",
+                                "#b91c1c",
+                            ),
+                            (
+                                "Carga_Minima_Superficie_lbf",
+                                "Mínima superficie",
+                                "#ea580c",
+                            ),
+                        ],
+                        "Cargas de superficie",
+                        "lbf",
+                    ),
+                    use_container_width=True,
+                    key=f"tendencia_cargas_superficie_{pozo}",
+                )
 
         st.subheader(
             f"Cartas {1 + (pagina_pozo - 1) * 5}–"
