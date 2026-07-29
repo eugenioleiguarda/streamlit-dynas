@@ -715,6 +715,355 @@ def analizar_falta_aporte_temporal(
     }
 
 
+def analizar_bloqueo_temporal(tabla):
+    """
+    Analiza persistencia, inicio y alternancia de una condición sin trabajo.
+
+    La función está pensada como complemento de un diagnóstico robusto
+    actual de ``Posible sin trabajo de bomba``. Compara cada pozo contra
+    sus propios niveles altos de los últimos 30 días y no reemplaza el
+    diagnóstico geométrico de las cartas.
+    """
+    insuficiente = {
+        "estado": "Evidencia temporal insuficiente",
+        "color": "#e87918",
+        "confianza": "Insuficiente",
+        "evidencias": [],
+        "fecha_inicio": None,
+        "transiciones_15d": 0,
+        "dias_bloqueado_15d": 0,
+        "dias_validos_15d": 0,
+        "porcentaje_bloqueado_15d": np.nan,
+    }
+    if tabla is None or tabla.empty or "Fecha" not in tabla:
+        insuficiente["evidencias"] = [
+            "No se cargaron tendencias históricas válidas."
+        ]
+        return insuficiente
+
+    trabajo = tabla.copy()
+    trabajo["Fecha"] = pd.to_datetime(
+        trabajo["Fecha"],
+        errors="coerce",
+    )
+    trabajo = trabajo.dropna(subset=["Fecha"])
+    if trabajo.empty:
+        insuficiente["evidencias"] = [
+            "No existen fechas válidas en el histórico."
+        ]
+        return insuficiente
+
+    columnas_numericas = [
+        "Llenado_Bomba_API_pct",
+        "Peso_Fluido_Promedio_lbf",
+        "Carga_Maxima_Fondo_lbf",
+        "Carga_Minima_Fondo_lbf",
+        "Carrera_Fondo_Total_pulg",
+        "Carrera_Superficie_pulg",
+    ]
+    for columna in columnas_numericas:
+        if columna in trabajo:
+            trabajo[columna] = pd.to_numeric(
+                trabajo[columna],
+                errors="coerce",
+            )
+
+    if {
+        "Carga_Maxima_Fondo_lbf",
+        "Carga_Minima_Fondo_lbf",
+    }.issubset(trabajo.columns):
+        trabajo["Apertura_Cargas_lbf"] = (
+            trabajo["Carga_Maxima_Fondo_lbf"]
+            - trabajo["Carga_Minima_Fondo_lbf"]
+        )
+
+    if {
+        "Carrera_Fondo_Total_pulg",
+        "Carrera_Superficie_pulg",
+    }.issubset(trabajo.columns):
+        superficie = trabajo["Carrera_Superficie_pulg"]
+        trabajo["Eficiencia_Carrera_pct"] = np.where(
+            superficie.abs() > 1e-9,
+            100.0
+            * trabajo["Carrera_Fondo_Total_pulg"]
+            / superficie,
+            np.nan,
+        )
+
+    variables = [
+        columna
+        for columna in [
+            "Llenado_Bomba_API_pct",
+            "Peso_Fluido_Promedio_lbf",
+            "Apertura_Cargas_lbf",
+            "Eficiencia_Carrera_pct",
+        ]
+        if columna in trabajo
+    ]
+    if len(variables) < 3:
+        insuficiente["evidencias"] = [
+            "Se necesitan al menos tres variables entre llenado, "
+            "peso de fluido, apertura de cargas y eficiencia de carrera."
+        ]
+        return insuficiente
+
+    trabajo["Dia"] = trabajo["Fecha"].dt.floor("D")
+    diaria = (
+        trabajo[["Dia", *variables]]
+        .groupby("Dia", as_index=False)
+        .median(numeric_only=True)
+        .sort_values("Dia")
+    )
+    fecha_final = diaria["Dia"].max()
+    diaria = diaria.loc[
+        diaria["Dia"]
+        >= fecha_final - pd.Timedelta(days=29)
+    ].copy()
+    if len(diaria) < 8:
+        insuficiente["evidencias"] = [
+            "Se requieren al menos 8 días con datos para analizar el bloqueo."
+        ]
+        return insuficiente
+
+    # El percentil alto representa la condición de mayor trabajo observada
+    # en el propio pozo. Es más robusto que aplicar una carga absoluta común.
+    referencias = {}
+    for columna in [
+        "Llenado_Bomba_API_pct",
+        "Peso_Fluido_Promedio_lbf",
+        "Apertura_Cargas_lbf",
+    ]:
+        referencias[columna] = (
+            float(diaria[columna].quantile(0.80))
+            if columna in diaria and diaria[columna].notna().any()
+            else np.nan
+        )
+
+    def puntos_bajos(valor, referencia, limite_absoluto=None):
+        if not np.isfinite(valor):
+            return 0
+        if limite_absoluto is not None and valor <= limite_absoluto:
+            return 2
+        if not np.isfinite(referencia) or referencia <= 1e-9:
+            return 0
+        relacion = valor / referencia
+        if relacion <= 0.50:
+            return 2
+        if relacion <= 0.70:
+            return 1
+        return 0
+
+    puntajes = []
+    variables_validas = []
+    for _, fila in diaria.iterrows():
+        componentes = []
+        if "Llenado_Bomba_API_pct" in diaria:
+            llenado_dia = fila["Llenado_Bomba_API_pct"]
+            componentes.append(
+                3
+                if np.isfinite(llenado_dia) and llenado_dia <= 25.0
+                else puntos_bajos(
+                    llenado_dia,
+                    referencias["Llenado_Bomba_API_pct"],
+                )
+            )
+        if "Peso_Fluido_Promedio_lbf" in diaria:
+            componentes.append(
+                puntos_bajos(
+                    fila["Peso_Fluido_Promedio_lbf"],
+                    referencias["Peso_Fluido_Promedio_lbf"],
+                )
+            )
+        if "Apertura_Cargas_lbf" in diaria:
+            componentes.append(
+                puntos_bajos(
+                    fila["Apertura_Cargas_lbf"],
+                    referencias["Apertura_Cargas_lbf"],
+                )
+            )
+
+        validas = sum(
+            pd.notna(fila.get(columna, np.nan))
+            for columna in [
+                "Llenado_Bomba_API_pct",
+                "Peso_Fluido_Promedio_lbf",
+                "Apertura_Cargas_lbf",
+            ]
+            if columna in diaria
+        )
+        eficiencia = fila.get("Eficiencia_Carrera_pct", np.nan)
+        punto_eficiencia = int(
+            np.isfinite(eficiencia)
+            and 90.0 <= eficiencia <= 115.0
+        )
+        puntajes.append(
+            float(sum(componentes) + punto_eficiencia)
+            if validas >= 2
+            else np.nan
+        )
+        variables_validas.append(validas)
+
+    diaria["Score_Bloqueo"] = puntajes
+    diaria["Variables_Validas"] = variables_validas
+    diaria["Bloqueado"] = np.where(
+        diaria["Score_Bloqueo"].notna(),
+        diaria["Score_Bloqueo"] >= 4.0,
+        np.nan,
+    )
+    valida = diaria.dropna(subset=["Bloqueado"]).copy()
+    if len(valida) < 8:
+        insuficiente["evidencias"] = [
+            "Menos de 8 días poseen suficientes variables para puntuar."
+        ]
+        return insuficiente
+
+    # Elimina inversiones aisladas de un solo día para no interpretar ruido
+    # como un bloqueo o desbloqueo operativo.
+    estados = valida["Bloqueado"].astype(bool).to_numpy()
+    estados_filtrados = estados.copy()
+    for indice in range(1, len(estados) - 1):
+        if estados[indice - 1] == estados[indice + 1]:
+            estados_filtrados[indice] = estados[indice - 1]
+    valida["Bloqueado_Filtrado"] = estados_filtrados
+
+    ventana_15 = valida.loc[
+        valida["Dia"]
+        >= fecha_final - pd.Timedelta(days=14)
+    ].copy()
+    dias_validos = int(len(ventana_15))
+    dias_bloqueado = int(ventana_15["Bloqueado_Filtrado"].sum())
+    fraccion_bloqueado = (
+        dias_bloqueado / dias_validos
+        if dias_validos
+        else np.nan
+    )
+    estados_15 = ventana_15["Bloqueado_Filtrado"].to_numpy(dtype=bool)
+    transiciones = int(
+        np.sum(estados_15[1:] != estados_15[:-1])
+        if len(estados_15) > 1
+        else 0
+    )
+    actual_bloqueado = bool(estados_filtrados[-1])
+
+    # Inicio de la corrida bloqueada vigente.
+    fecha_inicio = None
+    if actual_bloqueado:
+        inicio = len(estados_filtrados) - 1
+        while inicio > 0 and estados_filtrados[inicio - 1]:
+            inicio -= 1
+        fecha_inicio = pd.Timestamp(valida.iloc[inicio]["Dia"])
+
+    # Para reconocer desbloqueo exigimos dos estados recientes sin bloqueo.
+    desbloqueo_reciente = bool(
+        len(estados_filtrados) >= 3
+        and not estados_filtrados[-1]
+        and not estados_filtrados[-2]
+        and np.any(estados_filtrados[:-2])
+    )
+    alternante = bool(
+        dias_validos >= 8
+        and transiciones >= 3
+        and dias_bloqueado >= 3
+        and (dias_validos - dias_bloqueado) >= 3
+    )
+    persistente = bool(
+        dias_validos >= 10
+        and fraccion_bloqueado >= 0.80
+    )
+    bloqueo_reciente = bool(
+        actual_bloqueado
+        and fecha_inicio is not None
+        and fecha_inicio
+        >= fecha_final - pd.Timedelta(days=6)
+        and np.any(
+            valida.loc[
+                valida["Dia"] < fecha_inicio,
+                "Bloqueado_Filtrado",
+            ].eq(False)
+        )
+    )
+
+    if desbloqueo_reciente:
+        estado, color, confianza = (
+            "Posible desbloqueo reciente",
+            "#16833b",
+            "Media",
+        )
+    elif alternante:
+        estado, color, confianza = (
+            "Bloqueo intermitente",
+            "#9333ea",
+            "Alta",
+        )
+    elif persistente:
+        estado, color, confianza = (
+            "Bloqueo persistente en la ventana de 15 días",
+            "#dc2626",
+            "Alta",
+        )
+    elif bloqueo_reciente:
+        estado, color, confianza = (
+            "Bloqueo reciente detectado",
+            "#e87918",
+            "Alta",
+        )
+    elif actual_bloqueado:
+        estado, color, confianza = (
+            "Condición bloqueada sin inicio concluyente",
+            "#f97316",
+            "Media",
+        )
+    else:
+        estado, color, confianza = (
+            "Firma temporal de bloqueo no confirmada",
+            "#64748b",
+            "Media",
+        )
+
+    ultimo = valida.iloc[-1]
+    evidencias = [
+        (
+            f"Días compatibles con bloqueo: {dias_bloqueado} de "
+            f"{dias_validos} ({100 * fraccion_bloqueado:.0f}%)."
+        ),
+        f"Transiciones bloqueado/desbloqueado en 15 días: {transiciones}.",
+        f"Score de bloqueo más reciente: {ultimo['Score_Bloqueo']:.1f}/8.",
+    ]
+    if fecha_inicio is not None:
+        evidencias.append(
+            "Inicio estimado de la condición vigente: "
+            f"{fecha_inicio.strftime('%d/%m/%Y')}."
+        )
+    if "Llenado_Bomba_API_pct" in ultimo and pd.notna(
+        ultimo["Llenado_Bomba_API_pct"]
+    ):
+        evidencias.append(
+            "Llenado API diario más reciente: "
+            f"{ultimo['Llenado_Bomba_API_pct']:.1f}%."
+        )
+    if "Eficiencia_Carrera_pct" in ultimo and pd.notna(
+        ultimo["Eficiencia_Carrera_pct"]
+    ):
+        evidencias.append(
+            "Carrera fondo/superficie más reciente: "
+            f"{ultimo['Eficiencia_Carrera_pct']:.1f}%."
+        )
+
+    return {
+        "estado": estado,
+        "color": color,
+        "confianza": confianza,
+        "evidencias": evidencias,
+        "fecha_inicio": fecha_inicio,
+        "transiciones_15d": transiciones,
+        "dias_bloqueado_15d": dias_bloqueado,
+        "dias_validos_15d": dias_validos,
+        "porcentaje_bloqueado_15d": (
+            100.0 * fraccion_bloqueado
+        ),
+    }
+
+
 def a_array(valor):
     """Convierte listas del JSON o listas serializadas a arrays float."""
     if valor is None:

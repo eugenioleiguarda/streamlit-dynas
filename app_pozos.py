@@ -38,6 +38,9 @@ analizar_subexplotacion_temporal = (
 analizar_falta_aporte_temporal = (
     pipeline_diagnostico_modulo.analizar_falta_aporte_temporal
 )
+analizar_bloqueo_temporal = (
+    pipeline_diagnostico_modulo.analizar_bloqueo_temporal
+)
 
 
 st.set_page_config(
@@ -47,7 +50,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-07-29-tendencias-falta-aporte-v15"
+    "2026-07-29-tendencias-bloqueo-v16"
 )
 
 COLORES = {
@@ -1230,6 +1233,33 @@ with tab_detalle:
                             {etiqueta_aporte} — {analisis_temporal['estado'].lower()}
                         </span><br>
                         <small>Confianza temporal: {analisis_temporal['confianza']}</small>
+                        <ul style="margin-top:8px;margin-bottom:0;">
+                            {evidencias_html}
+                        </ul>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            elif "Posible sin trabajo de bomba" in texto_estado:
+                analisis_temporal = analizar_bloqueo_temporal(
+                    tendencias_pozo
+                )
+                evidencias_html = "".join(
+                    f"<li>{evidencia}</li>"
+                    for evidencia in analisis_temporal["evidencias"]
+                )
+                st.markdown(
+                    f"""
+                    <div style="border-left:6px solid {analisis_temporal['color']};
+                                padding:10px 14px;margin-top:10px;
+                                background:rgba(128,128,128,.08);border-radius:6px;">
+                        <b>Análisis temporal de trabajo de bomba</b><br>
+                        <span style="font-size:1.08rem;">
+                            Posible sin trabajo de bomba —
+                            {analisis_temporal['estado'].lower()}
+                        </span><br>
+                        <small>Confianza temporal:
+                            {analisis_temporal['confianza']}</small>
                         <ul style="margin-top:8px;margin-bottom:0;">
                             {evidencias_html}
                         </ul>
