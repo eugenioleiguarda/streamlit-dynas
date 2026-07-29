@@ -14,6 +14,440 @@ import numpy as np
 import pandas as pd
 
 
+def calcular_sumergencia_relativa(
+    sumergencia_m,
+    profundidad_bomba_m,
+):
+    """Calcula sumergencia/profundidad en porcentaje, preservando NaN."""
+    sumergencia = pd.to_numeric(
+        pd.Series(sumergencia_m),
+        errors="coerce",
+    )
+    profundidad = pd.to_numeric(
+        pd.Series(profundidad_bomba_m),
+        errors="coerce",
+    )
+    resultado = np.where(
+        profundidad.abs() > 1e-9,
+        100.0 * sumergencia / profundidad,
+        np.nan,
+    )
+    if np.ndim(sumergencia_m) == 0 and np.ndim(profundidad_bomba_m) == 0:
+        return float(resultado[0])
+    return resultado
+
+
+def _pendiente_theil_sen(dias, valores):
+    """Pendiente robusta: mediana de pendientes entre pares."""
+    pendientes = []
+    for indice in range(len(valores) - 1):
+        delta_dias = dias[indice + 1:] - dias[indice]
+        delta_valores = valores[indice + 1:] - valores[indice]
+        validos = delta_dias > 0
+        if np.any(validos):
+            pendientes.extend(
+                (delta_valores[validos] / delta_dias[validos]).tolist()
+            )
+    return float(np.median(pendientes)) if pendientes else np.nan
+
+
+def calcular_indicadores_moviles_15d(tabla):
+    """
+    Calcula indicadores robustos sobre los últimos 15 días calendario.
+
+    La tendencia usa medianas diarias para que los días con más mediciones
+    no tengan mayor peso estadístico.
+    """
+    if tabla is None or tabla.empty:
+        return pd.DataFrame()
+
+    trabajo = tabla.copy()
+    trabajo["Fecha"] = pd.to_datetime(trabajo["Fecha"], errors="coerce")
+    trabajo = trabajo.dropna(subset=["Fecha"])
+    if trabajo.empty:
+        return pd.DataFrame()
+
+    if {
+        "Carga_Maxima_Fondo_lbf",
+        "Carga_Minima_Fondo_lbf",
+    }.issubset(trabajo.columns):
+        trabajo["Rango_Carga_Fondo_lbf"] = (
+            pd.to_numeric(
+                trabajo["Carga_Maxima_Fondo_lbf"],
+                errors="coerce",
+            )
+            - pd.to_numeric(
+                trabajo["Carga_Minima_Fondo_lbf"],
+                errors="coerce",
+            )
+        )
+
+    if {
+        "Carrera_Fondo_Total_pulg",
+        "Carrera_Superficie_pulg",
+    }.issubset(trabajo.columns):
+        superficie = pd.to_numeric(
+            trabajo["Carrera_Superficie_pulg"],
+            errors="coerce",
+        )
+        trabajo["Eficiencia_Carrera_pct"] = np.where(
+            superficie.abs() > 1e-9,
+            100.0
+            * pd.to_numeric(
+                trabajo["Carrera_Fondo_Total_pulg"],
+                errors="coerce",
+            )
+            / superficie,
+            np.nan,
+        )
+
+    if {
+        "Sumergencia_API_m",
+        "Profundidad_Bomba_m",
+    }.issubset(trabajo.columns):
+        trabajo["Sumergencia_Relativa_API_pct"] = (
+            calcular_sumergencia_relativa(
+                trabajo["Sumergencia_API_m"],
+                trabajo["Profundidad_Bomba_m"],
+            )
+        )
+
+    variables = [
+        ("Llenado_Bomba_API_pct", "Llenado de bomba", "%"),
+        (
+            "Sumergencia_Relativa_API_pct",
+            "Sumergencia relativa API",
+            "%",
+        ),
+        ("Peso_Fluido_Promedio_lbf", "Peso de fluido promedio", "lbf"),
+        ("Carga_Maxima_Fondo_lbf", "Carga máxima de fondo", "lbf"),
+        ("Carga_Minima_Fondo_lbf", "Carga mínima de fondo", "lbf"),
+        ("Rango_Carga_Fondo_lbf", "Apertura de cargas de fondo", "lbf"),
+        ("Carrera_Fondo_Total_pulg", "Carrera de fondo", "pulg"),
+        ("Carrera_Superficie_pulg", "Carrera de superficie", "pulg"),
+        (
+            "Eficiencia_Carrera_pct",
+            "Eficiencia de carrera fondo/superficie",
+            "%",
+        ),
+        ("Torque_Reductor_pct", "Torque reductor", "%"),
+        ("Carga_Estructural_pct", "Carga estructural", "%"),
+    ]
+
+    fecha_final = trabajo["Fecha"].max()
+    fecha_inicial = fecha_final.floor("D") - pd.Timedelta(days=14)
+    ventana = trabajo.loc[trabajo["Fecha"] >= fecha_inicial].copy()
+    ventana["Dia"] = ventana["Fecha"].dt.floor("D")
+
+    filas = []
+    for columna, etiqueta, unidad in variables:
+        if (
+            columna not in ventana.columns
+            or not ventana[columna].notna().any()
+        ):
+            continue
+
+        datos_crudos = (
+            ventana[["Fecha", "Dia", columna]]
+            .dropna()
+            .sort_values("Fecha")
+        )
+        diaria = (
+            datos_crudos
+            .groupby("Dia", as_index=False)[columna]
+            .median()
+            .sort_values("Dia")
+        )
+        valores = diaria[columna].to_numpy(dtype=float)
+        dias = (
+            (diaria["Dia"] - diaria["Dia"].min())
+            .dt.total_seconds()
+            .to_numpy(dtype=float)
+            / 86400.0
+        )
+
+        mediana = float(np.median(valores))
+        mad = float(np.median(np.abs(valores - mediana)))
+        volatilidad = (
+            100.0 * 1.4826 * mad / abs(mediana)
+            if abs(mediana) > 1e-9
+            else np.nan
+        )
+        pendiente = _pendiente_theil_sen(dias, valores)
+        pendiente_relativa = (
+            100.0 * pendiente / abs(mediana)
+            if np.isfinite(pendiente) and abs(mediana) > 1e-9
+            else np.nan
+        )
+
+        corte_3d = fecha_final.floor("D") - pd.Timedelta(days=2)
+        ultimos_3 = diaria.loc[diaria["Dia"] >= corte_3d, columna]
+        anteriores_12 = diaria.loc[diaria["Dia"] < corte_3d, columna]
+        cambio = (
+            float(np.median(ultimos_3) - np.median(anteriores_12))
+            if not ultimos_3.empty and not anteriores_12.empty
+            else np.nan
+        )
+        base_12 = (
+            float(np.median(anteriores_12))
+            if not anteriores_12.empty
+            else np.nan
+        )
+        cambio_pct = (
+            100.0 * cambio / abs(base_12)
+            if np.isfinite(cambio)
+            and np.isfinite(base_12)
+            and abs(base_12) > 1e-9
+            else np.nan
+        )
+
+        dias_con_datos = int(len(diaria))
+        calidad = (
+            "Alta" if dias_con_datos >= 12
+            else "Media" if dias_con_datos >= 8
+            else "Baja" if dias_con_datos >= 5
+            else "Insuficiente"
+        )
+        filas.append({
+            "Variable": etiqueta,
+            "Unidad": unidad,
+            "Último": float(datos_crudos[columna].iloc[-1]),
+            "Mediana_15d": mediana,
+            "Pendiente_por_día": pendiente,
+            "Pendiente_relativa_pct_día": pendiente_relativa,
+            "Volatilidad_MAD_pct": volatilidad,
+            "Cambio_3d_vs_12d": cambio,
+            "Cambio_3d_vs_12d_pct": cambio_pct,
+            "Días_con_datos": dias_con_datos,
+            "Mediciones": int(len(datos_crudos)),
+            "Calidad": calidad,
+        })
+
+    return pd.DataFrame(filas)
+
+
+def analizar_subexplotacion_temporal(indicadores):
+    """Califica el contexto temporal de un pozo robustamente subexplotado."""
+    insuficiente = {
+        "estado": "Evidencia temporal insuficiente",
+        "color": "#e87918",
+        "confianza": "Insuficiente",
+        "evidencias": [],
+    }
+    if indicadores is None or indicadores.empty:
+        insuficiente["evidencias"] = [
+            "No se cargaron tendencias históricas válidas."
+        ]
+        return insuficiente
+
+    por_variable = {
+        fila["Variable"]: fila
+        for _, fila in indicadores.iterrows()
+    }
+    nombres = {
+        "peso": "Peso de fluido promedio",
+        "apertura": "Apertura de cargas de fondo",
+        "llenado": "Llenado de bomba",
+        "sumergencia": "Sumergencia relativa API",
+        "eficiencia": "Eficiencia de carrera fondo/superficie",
+    }
+    filas = {
+        clave: por_variable.get(nombre)
+        for clave, nombre in nombres.items()
+    }
+    suficientes = [
+        fila for fila in filas.values()
+        if fila is not None
+        and pd.notna(fila.get("Días_con_datos"))
+        and float(fila["Días_con_datos"]) >= 8
+    ]
+    if (
+        len(suficientes) < 3
+        or filas["peso"] is None
+        or filas["llenado"] is None
+    ):
+        faltantes = [
+            nombre for clave, nombre in nombres.items()
+            if filas[clave] is None
+            or pd.isna(filas[clave].get("Días_con_datos"))
+            or float(filas[clave]["Días_con_datos"]) < 8
+        ]
+        insuficiente["evidencias"] = [
+            "Se requieren al menos 8 días válidos en tres variables críticas.",
+            "Cobertura insuficiente: " + ", ".join(faltantes),
+        ]
+        return insuficiente
+
+    def numero(fila, columna):
+        if fila is None:
+            return np.nan
+        valor = fila.get(columna, np.nan)
+        return float(valor) if pd.notna(valor) else np.nan
+
+    peso = filas["peso"]
+    apertura = filas["apertura"]
+    llenado = filas["llenado"]
+    sumergencia = filas["sumergencia"]
+    eficiencia = filas["eficiencia"]
+
+    peso_pend = numero(peso, "Pendiente_relativa_pct_día")
+    peso_cambio = numero(peso, "Cambio_3d_vs_12d_pct")
+    peso_vol = numero(peso, "Volatilidad_MAD_pct")
+    apertura_pend = numero(apertura, "Pendiente_relativa_pct_día")
+    apertura_cambio = numero(apertura, "Cambio_3d_vs_12d_pct")
+    apertura_vol = numero(apertura, "Volatilidad_MAD_pct")
+    llenado_ultimo = numero(llenado, "Último")
+    llenado_pend = numero(llenado, "Pendiente_por_día")
+    llenado_cambio = numero(llenado, "Cambio_3d_vs_12d")
+    llenado_vol = numero(llenado, "Volatilidad_MAD_pct")
+    sum_ultimo = numero(sumergencia, "Último")
+    sum_pend = numero(sumergencia, "Pendiente_por_día")
+    sum_cambio = numero(sumergencia, "Cambio_3d_vs_12d")
+    eficiencia_pend = numero(eficiencia, "Pendiente_relativa_pct_día")
+    eficiencia_cambio = numero(eficiencia, "Cambio_3d_vs_12d_pct")
+
+    peso_sube = (
+        np.isfinite(peso_pend) and peso_pend > 0.15
+    ) or (
+        np.isfinite(peso_cambio) and peso_cambio > 2.0
+    )
+    peso_estable = (
+        np.isfinite(peso_pend)
+        and np.isfinite(peso_cambio)
+        and abs(peso_pend) <= 0.15
+        and abs(peso_cambio) <= 2.0
+    )
+    apertura_sube = (
+        np.isfinite(apertura_pend) and apertura_pend > 0.20
+    ) or (
+        np.isfinite(apertura_cambio) and apertura_cambio > 3.0
+    )
+    apertura_estable = (
+        np.isfinite(apertura_pend)
+        and np.isfinite(apertura_cambio)
+        and abs(apertura_pend) <= 0.20
+        and abs(apertura_cambio) <= 3.0
+    )
+    llenado_baja = (
+        np.isfinite(llenado_pend) and llenado_pend < -0.15
+    ) or (
+        np.isfinite(llenado_cambio) and llenado_cambio < -2.0
+    )
+    llenado_alto = (
+        np.isfinite(llenado_ultimo)
+        and 90.0 <= llenado_ultimo <= 102.0
+    )
+    sumergencia_baja = (
+        np.isfinite(sum_ultimo) and sum_ultimo <= 10.0
+    )
+    sumergencia_desciende = (
+        np.isfinite(sum_pend) and sum_pend < -0.10
+    ) or (
+        np.isfinite(sum_cambio) and sum_cambio < -1.0
+    )
+    eficiencia_baja = (
+        np.isfinite(eficiencia_pend) and eficiencia_pend < -0.03
+    ) or (
+        np.isfinite(eficiencia_cambio) and eficiencia_cambio < -0.5
+    )
+    volatil = (
+        (np.isfinite(peso_vol) and peso_vol > 6.0)
+        or (np.isfinite(apertura_vol) and apertura_vol > 8.0)
+        or (np.isfinite(llenado_vol) and llenado_vol > 8.0)
+    )
+
+    evidencias = [
+        (
+            f"Peso de fluido: {peso_pend:+.2f}%/día; "
+            f"cambio reciente {peso_cambio:+.2f}%."
+        ),
+        (
+            f"Apertura de cargas: {apertura_pend:+.2f}%/día; "
+            f"cambio reciente {apertura_cambio:+.2f}%."
+        ),
+        (
+            f"Llenado API actual: {llenado_ultimo:.1f}%; "
+            f"tendencia {llenado_pend:+.2f} pp/día."
+        ),
+    ]
+    if np.isfinite(sum_ultimo):
+        evidencias.append(
+            f"Sumergencia relativa API actual: {sum_ultimo:.1f}%."
+        )
+    if np.isfinite(eficiencia_pend):
+        evidencias.append(
+            "Eficiencia de carrera fondo/superficie: "
+            f"{eficiencia_pend:+.2f}%/día."
+        )
+
+    if volatil:
+        estado, color, confianza = (
+            "Comportamiento temporal volátil",
+            "#9333ea",
+            "Media",
+        )
+    elif (
+        peso_sube
+        and apertura_sube
+        and (
+            (np.isfinite(llenado_ultimo) and llenado_ultimo < 90.0)
+            or llenado_baja
+        )
+    ):
+        estado, color, confianza = (
+            "Condición de extracción deteriorándose",
+            "#dc2626",
+            "Alta",
+        )
+    elif (
+        sumergencia_baja
+        and llenado_alto
+        and not llenado_baja
+        and (peso_estable or not peso_sube)
+    ):
+        estado, color, confianza = (
+            "Aproximándose al equilibrio operativo",
+            "#0284c7",
+            "Alta",
+        )
+    elif (
+        peso_sube
+        and (
+            apertura_sube
+            or sumergencia_desciende
+            or eficiencia_baja
+        )
+    ):
+        estado, color, confianza = (
+            "Oportunidad debilitándose",
+            "#e87918",
+            "Media",
+        )
+    elif (
+        peso_estable
+        and apertura_estable
+        and not llenado_baja
+    ):
+        estado, color, confianza = (
+            "Condición estable",
+            "#16833b",
+            "Alta",
+        )
+    else:
+        estado, color, confianza = (
+            "Evolución temporal no concluyente",
+            "#64748b",
+            "Media",
+        )
+
+    return {
+        "estado": estado,
+        "color": color,
+        "confianza": confianza,
+        "evidencias": evidencias,
+    }
+
+
 def a_array(valor):
     """Convierte listas del JSON o listas serializadas a arrays float."""
     if valor is None:

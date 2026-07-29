@@ -26,6 +26,15 @@ pipeline_diagnostico_modulo = importlib.reload(
 )
 a_array = pipeline_diagnostico_modulo.a_array
 procesar_json = pipeline_diagnostico_modulo.procesar_json
+calcular_sumergencia_relativa = (
+    pipeline_diagnostico_modulo.calcular_sumergencia_relativa
+)
+calcular_indicadores_moviles_15d = (
+    pipeline_diagnostico_modulo.calcular_indicadores_moviles_15d
+)
+analizar_subexplotacion_temporal = (
+    pipeline_diagnostico_modulo.analizar_subexplotacion_temporal
+)
 
 
 st.set_page_config(
@@ -35,7 +44,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-07-28-admision-fronteriza-golpe-bomba-v13"
+    "2026-07-29-refactor-tendencias-pipeline-v14"
 )
 
 COLORES = {
@@ -139,6 +148,17 @@ def leer_tendencias(contenido: bytes | None):
             errors="coerce",
         )
 
+    if {
+        "Sumergencia_API_m",
+        "Profundidad_Bomba_m",
+    }.issubset(tabla.columns):
+        tabla["Sumergencia_Relativa_API_pct"] = (
+            calcular_sumergencia_relativa(
+                tabla["Sumergencia_API_m"],
+                tabla["Profundidad_Bomba_m"],
+            )
+        )
+
     return (
         tabla
         .sort_values(["Pozo", "Fecha"])
@@ -212,202 +232,6 @@ def figura_tendencia_diaria(
     )
 
     return figura
-
-
-def _pendiente_theil_sen(
-    dias: np.ndarray,
-    valores: np.ndarray,
-) -> float:
-    """Pendiente robusta como mediana de todas las pendientes entre pares."""
-    pendientes = []
-    for i in range(len(valores) - 1):
-        delta_dias = dias[i + 1:] - dias[i]
-        delta_valores = valores[i + 1:] - valores[i]
-        validos = delta_dias > 0
-        if np.any(validos):
-            pendientes.extend(
-                (delta_valores[validos] / delta_dias[validos]).tolist()
-            )
-
-    return (
-        float(np.median(pendientes))
-        if pendientes
-        else np.nan
-    )
-
-
-def calcular_indicadores_moviles_15d(
-    tabla: pd.DataFrame,
-) -> pd.DataFrame:
-    """
-    Resume tendencias sobre una ventana de 15 días.
-
-    Primero consolida cada variable mediante su mediana diaria para que
-    los días con mayor frecuencia de adquisición no pesen más.
-    """
-    if tabla.empty:
-        return pd.DataFrame()
-
-    trabajo = tabla.copy()
-    trabajo["Fecha"] = pd.to_datetime(
-        trabajo["Fecha"],
-        errors="coerce",
-    )
-    trabajo = trabajo.dropna(subset=["Fecha"])
-    if trabajo.empty:
-        return pd.DataFrame()
-
-    # Variables derivadas útiles para el análisis mecánico y de bombeo.
-    if {
-        "Carga_Maxima_Fondo_lbf",
-        "Carga_Minima_Fondo_lbf",
-    }.issubset(trabajo.columns):
-        trabajo["Rango_Carga_Fondo_lbf"] = (
-            trabajo["Carga_Maxima_Fondo_lbf"]
-            - trabajo["Carga_Minima_Fondo_lbf"]
-        )
-
-    if {
-        "Carrera_Fondo_Total_pulg",
-        "Carrera_Superficie_pulg",
-    }.issubset(trabajo.columns):
-        superficie = pd.to_numeric(
-            trabajo["Carrera_Superficie_pulg"],
-            errors="coerce",
-        )
-        trabajo["Eficiencia_Carrera_pct"] = np.where(
-            superficie.abs() > 1e-9,
-            100
-            * pd.to_numeric(
-                trabajo["Carrera_Fondo_Total_pulg"],
-                errors="coerce",
-            )
-            / superficie,
-            np.nan,
-        )
-
-    variables = [
-        ("Llenado_Bomba_API_pct", "Llenado de bomba", "%"),
-        ("Peso_Fluido_Promedio_lbf", "Peso de fluido promedio", "lbf"),
-        ("Carga_Maxima_Fondo_lbf", "Carga máxima de fondo", "lbf"),
-        ("Carga_Minima_Fondo_lbf", "Carga mínima de fondo", "lbf"),
-        ("Rango_Carga_Fondo_lbf", "Apertura de cargas de fondo", "lbf"),
-        ("Carrera_Fondo_Total_pulg", "Carrera de fondo", "pulg"),
-        ("Carrera_Superficie_pulg", "Carrera de superficie", "pulg"),
-        ("Eficiencia_Carrera_pct", "Eficiencia de carrera fondo/superficie", "%"),
-        ("Torque_Reductor_pct", "Torque reductor", "%"),
-        ("Carga_Estructural_pct", "Carga estructural", "%"),
-    ]
-
-    fecha_final = trabajo["Fecha"].max()
-    # Quince fechas calendario exactas: el día más reciente y los
-    # catorce anteriores. Restar 15 días desde la hora máxima podía
-    # incorporar parcialmente una decimosexta fecha.
-    fecha_inicial = (
-        fecha_final.floor("D")
-        - pd.Timedelta(days=14)
-    )
-    ventana = trabajo.loc[
-        trabajo["Fecha"] >= fecha_inicial
-    ].copy()
-    ventana["Dia"] = ventana["Fecha"].dt.floor("D")
-
-    filas = []
-    for columna, etiqueta, unidad in variables:
-        if (
-            columna not in ventana.columns
-            or not ventana[columna].notna().any()
-        ):
-            continue
-
-        datos_crudos = (
-            ventana[["Fecha", "Dia", columna]]
-            .dropna()
-            .sort_values("Fecha")
-        )
-        diaria = (
-            datos_crudos
-            .groupby("Dia", as_index=False)[columna]
-            .median()
-            .sort_values("Dia")
-        )
-
-        valores = diaria[columna].to_numpy(dtype=float)
-        dias = (
-            (diaria["Dia"] - diaria["Dia"].min())
-            .dt.total_seconds()
-            .to_numpy(dtype=float)
-            / 86400.0
-        )
-
-        mediana = float(np.median(valores))
-        mad = float(np.median(np.abs(valores - mediana)))
-        volatilidad_relativa = (
-            100 * 1.4826 * mad / abs(mediana)
-            if abs(mediana) > 1e-9
-            else np.nan
-        )
-        pendiente = _pendiente_theil_sen(dias, valores)
-        pendiente_relativa = (
-            100 * pendiente / abs(mediana)
-            if np.isfinite(pendiente)
-            and abs(mediana) > 1e-9
-            else np.nan
-        )
-
-        fecha_corte_3d = fecha_final.floor("D") - pd.Timedelta(days=2)
-        ultimos_3 = diaria.loc[
-            diaria["Dia"] >= fecha_corte_3d,
-            columna,
-        ]
-        anteriores_12 = diaria.loc[
-            diaria["Dia"] < fecha_corte_3d,
-            columna,
-        ]
-        cambio_3_vs_12 = (
-            float(np.median(ultimos_3) - np.median(anteriores_12))
-            if not ultimos_3.empty and not anteriores_12.empty
-            else np.nan
-        )
-        base_12 = (
-            float(np.median(anteriores_12))
-            if not anteriores_12.empty
-            else np.nan
-        )
-        cambio_3_vs_12_pct = (
-            100 * cambio_3_vs_12 / abs(base_12)
-            if np.isfinite(cambio_3_vs_12)
-            and np.isfinite(base_12)
-            and abs(base_12) > 1e-9
-            else np.nan
-        )
-
-        dias_con_datos = int(len(diaria))
-        if dias_con_datos >= 12:
-            calidad = "Alta"
-        elif dias_con_datos >= 8:
-            calidad = "Media"
-        elif dias_con_datos >= 5:
-            calidad = "Baja"
-        else:
-            calidad = "Insuficiente"
-
-        filas.append({
-            "Variable": etiqueta,
-            "Unidad": unidad,
-            "Último": float(datos_crudos[columna].iloc[-1]),
-            "Mediana_15d": mediana,
-            "Pendiente_por_día": pendiente,
-            "Pendiente_relativa_pct_día": pendiente_relativa,
-            "Volatilidad_MAD_pct": volatilidad_relativa,
-            "Cambio_3d_vs_12d": cambio_3_vs_12,
-            "Cambio_3d_vs_12d_pct": cambio_3_vs_12_pct,
-            "Días_con_datos": dias_con_datos,
-            "Mediciones": int(len(datos_crudos)),
-            "Calidad": calidad,
-        })
-
-    return pd.DataFrame(filas)
 
 
 def fecha_referencia_json(contenido: bytes):
@@ -1307,6 +1131,19 @@ with tab_detalle:
             .sort_values("Fecha", ascending=False)
             .reset_index(drop=True)
         )
+        tendencias_pozo = (
+            tendencias.loc[
+                tendencias["Pozo_Clave"]
+                == normalizar_pozo(pozo)
+            ]
+            .sort_values("Fecha")
+            .copy()
+            if not tendencias.empty
+            else pd.DataFrame()
+        )
+        indicadores_15d = calcular_indicadores_moviles_15d(
+            tendencias_pozo
+        )
         paginas_pozo = max(1, ceil(len(cartas_pozo) / 5))
         pagina_pozo = st.number_input(
             "Grupo de cinco cartas (1 = más recientes)",
@@ -1332,6 +1169,35 @@ with tab_detalle:
             """,
             unsafe_allow_html=True,
         )
+
+        if (
+            estado == "Diagnóstico robusto"
+            and "Posible pozo subexplotado" in texto_estado
+        ):
+            analisis_temporal = analizar_subexplotacion_temporal(
+                indicadores_15d
+            )
+            evidencias_html = "".join(
+                f"<li>{evidencia}</li>"
+                for evidencia in analisis_temporal["evidencias"]
+            )
+            st.markdown(
+                f"""
+                <div style="border-left:6px solid {analisis_temporal['color']};
+                            padding:10px 14px;margin-top:10px;
+                            background:rgba(128,128,128,.08);border-radius:6px;">
+                    <b>Análisis temporal de tendencias</b><br>
+                    <span style="font-size:1.08rem;">
+                        Posible pozo subexplotado — {analisis_temporal['estado'].lower()}
+                    </span><br>
+                    <small>Confianza temporal: {analisis_temporal['confianza']}</small>
+                    <ul style="margin-top:8px;margin-bottom:0;">
+                        {evidencias_html}
+                    </ul>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
         ultima = cartas_pozo.iloc[0]
         m1, m2, m3, m4 = st.columns(4)
@@ -1401,16 +1267,6 @@ with tab_detalle:
             )
 
         st.subheader("Tendencias históricas de operación")
-        tendencias_pozo = (
-            tendencias.loc[
-                tendencias["Pozo_Clave"]
-                == normalizar_pozo(pozo)
-            ]
-            .sort_values("Fecha")
-            .copy()
-            if not tendencias.empty
-            else pd.DataFrame()
-        )
 
         if tendencias_pozo.empty:
             st.info(
@@ -1427,9 +1283,6 @@ with tab_detalle:
                 "Los gráficos muestran todas las mediciones recibidas."
             )
 
-            indicadores_15d = calcular_indicadores_moviles_15d(
-                tendencias_pozo
-            )
             st.markdown("#### Indicadores móviles de los últimos 15 días")
             if indicadores_15d.empty:
                 st.info(
@@ -1471,8 +1324,13 @@ no tenga más peso que otro. Todavía no se aplican umbrales diagnósticos.
                                 "Llenado de bomba",
                                 "#16833b",
                             ),
+                            (
+                                "Sumergencia_Relativa_API_pct",
+                                "Sumergencia relativa",
+                                "#0284c7",
+                            ),
                         ],
-                        "Llenado de bomba",
+                        "Llenado y sumergencia relativa",
                         "%",
                     ),
                     use_container_width=True,
