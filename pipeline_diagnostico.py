@@ -5059,11 +5059,16 @@ def procesar_json(origen, silencioso=True):
             "Carga_Inicial_Asc_Relativa": np.nan,
             "Posicion_Cierre_50_pct": np.nan,
             "Posicion_Cierre_80_pct": np.nan,
+            "Separacion_Ramas_Inicial_pct_gap": np.nan,
+            "Extension_Ramas_Juntas_pct": np.nan,
         }
         try:
             asc = resultado["Ascendente"]
+            desc = resultado["Descendente"]
             x = np.asarray(asc["posicion"], dtype=float)
             y = np.asarray(asc["carga"], dtype=float)
+            x_desc = np.asarray(desc["posicion"], dtype=float)
+            y_desc = np.asarray(desc["carga"], dtype=float)
             carga_inf = float(resultado["Carga_Desc_Geometrica"])
             carga_sup = float(resultado["Carga_Asc_Geometrica"])
             rango_x = float(np.ptp(x))
@@ -5086,6 +5091,120 @@ def procesar_json(origen, silencioso=True):
                 candidatos = np.flatnonzero(carga_rel >= nivel)
                 if len(candidatos):
                     salida[clave] = float(progreso[candidatos[0]])
+
+            # Un cierre tardío verdadero exige que las dos ramas sigan
+            # juntas al comienzo. Una pared izquierda inclinada, por sí
+            # sola, no alcanza para establecer el diagnóstico.
+            def preparar_rama(x_rama, y_rama):
+                tabla = pd.DataFrame({
+                    "x": np.asarray(x_rama, dtype=float),
+                    "y": np.asarray(y_rama, dtype=float),
+                })
+                tabla = tabla.replace(
+                    [np.inf, -np.inf],
+                    np.nan,
+                ).dropna()
+                tabla = (
+                    tabla.groupby("x", as_index=False)["y"]
+                    .median()
+                    .sort_values("x")
+                )
+                return (
+                    tabla["x"].to_numpy(dtype=float),
+                    tabla["y"].to_numpy(dtype=float),
+                )
+
+            xa, ya = preparar_rama(x, y)
+            xd, yd = preparar_rama(x_desc, y_desc)
+
+            if len(xa) >= 2 and len(xd) >= 2:
+                x_min_total = float(
+                    min(np.nanmin(xa), np.nanmin(xd))
+                )
+                x_max_total = float(
+                    max(np.nanmax(xa), np.nanmax(xd))
+                )
+                recorrido_total = x_max_total - x_min_total
+                x_inicio = float(
+                    max(np.nanmin(xa), np.nanmin(xd))
+                )
+                x_fin_solape = float(
+                    min(np.nanmax(xa), np.nanmax(xd))
+                )
+                x_fin_analisis = min(
+                    x_fin_solape,
+                    x_min_total + 0.25 * recorrido_total,
+                )
+
+                if (
+                    recorrido_total > 1e-9
+                    and x_fin_analisis > x_inicio
+                ):
+                    grilla = np.linspace(
+                        x_inicio,
+                        x_fin_analisis,
+                        51,
+                    )
+                    asc_interp = np.interp(grilla, xa, ya)
+                    desc_interp = np.interp(grilla, xd, yd)
+                    separacion = (
+                        np.abs(asc_interp - desc_interp) / gap
+                    )
+                    separacion_suave = (
+                        pd.Series(separacion)
+                        .rolling(
+                            window=3,
+                            center=True,
+                            min_periods=1,
+                        )
+                        .median()
+                        .to_numpy(dtype=float)
+                    )
+                    progreso_comun = (
+                        100.0
+                        * (grilla - x_min_total)
+                        / recorrido_total
+                    )
+
+                    zona_inicial_comun = progreso_comun <= 8.0
+                    if np.any(zona_inicial_comun):
+                        salida[
+                            "Separacion_Ramas_Inicial_pct_gap"
+                        ] = float(
+                            100.0
+                            * np.nanmedian(
+                                separacion_suave[
+                                    zona_inicial_comun
+                                ]
+                            )
+                        )
+
+                    # El tramo termina cuando tres muestras seguidas
+                    # superan 12 % de la separación entre horizontales.
+                    fuera = separacion_suave > 0.12
+                    corte = len(fuera)
+                    for indice in range(
+                        0,
+                        max(len(fuera) - 2, 0),
+                    ):
+                        if np.all(fuera[indice:indice + 3]):
+                            corte = indice
+                            break
+
+                    if corte == 0:
+                        extension_juntas = 0.0
+                    elif corte < len(progreso_comun):
+                        extension_juntas = float(
+                            progreso_comun[corte - 1]
+                        )
+                    else:
+                        extension_juntas = float(
+                            progreso_comun[-1]
+                        )
+
+                    salida[
+                        "Extension_Ramas_Juntas_pct"
+                    ] = extension_juntas
         except Exception:
             pass
         return salida
@@ -5300,6 +5419,12 @@ def procesar_json(origen, silencioso=True):
         posicion_cierre_80 = metricas_cierre_viajera[
             "Posicion_Cierre_80_pct"
         ]
+        separacion_ramas_inicial = metricas_cierre_viajera[
+            "Separacion_Ramas_Inicial_pct_gap"
+        ]
+        extension_ramas_juntas = metricas_cierre_viajera[
+            "Extension_Ramas_Juntas_pct"
+        ]
         cierre_tardio_viajera = bool(
             horizontales_ok
             and not sin_trabajo
@@ -5309,12 +5434,16 @@ def procesar_json(origen, silencioso=True):
             and np.isfinite(carga_inicial_asc_relativa)
             and np.isfinite(posicion_cierre_50)
             and np.isfinite(posicion_cierre_80)
+            and np.isfinite(separacion_ramas_inicial)
+            and np.isfinite(extension_ramas_juntas)
             and vacio_si >= 12.0
             and vacio_sd < 8.0
             and vacio_id < 20.0
             and carga_inicial_asc_relativa <= 0.15
             and posicion_cierre_50 >= 8.0
             and posicion_cierre_80 >= 12.0
+            and separacion_ramas_inicial <= 12.0
+            and extension_ramas_juntas >= 6.0
         )
         if cierre_tardio_viajera:
             alertas.append(
@@ -6111,6 +6240,10 @@ def procesar_json(origen, silencioso=True):
                 posicion_cierre_50,
             "Posicion_Cierre_80_pct":
                 posicion_cierre_80,
+            "Separacion_Ramas_Inicial_pct_gap":
+                separacion_ramas_inicial,
+            "Extension_Ramas_Juntas_pct":
+                extension_ramas_juntas,
             "Golpe_Fluido":
                 golpe_fluido,
             "Compresion_Gas":
