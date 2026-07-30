@@ -2294,6 +2294,18 @@ def procesar_json(origen, silencioso=True):
         pendiente_sup = calidad_horizontal_tramo(asc, linea_asc, rango_y)
         pendiente_inf = calidad_horizontal_tramo(desc, linea_desc, rango_y)
 
+        # Persistencia geométrica de los tramos respecto del recorrido
+        # completo. Los umbrales son deliberadamente bajos porque, ante
+        # compresión fuerte, la referencia inferior real puede ser corta.
+        extension_sup = abs(
+            float(linea_asc["posicion_fin"])
+            - float(linea_asc["posicion_inicio"])
+        ) / rango_x
+        extension_inf = abs(
+            float(linea_desc["posicion_fin"])
+            - float(linea_desc["posicion_inicio"])
+        ) / rango_x
+
         evidencias = []
         if gap <= 0:
             evidencias.append("HORIZONTALES_INVERTIDAS")
@@ -2308,7 +2320,34 @@ def procesar_json(origen, silencioso=True):
             evidencias.append("TRAMOS_NO_HORIZONTALES")
 
         # Inversión es suficiente. Sin inversión exigimos tres evidencias concurrentes.
-        confiables = not (gap <= 0 or len(evidencias) >= 3)
+        # Las evidencias de contexto (llenado API bajo, carta angosta o
+        # diferencia contra el peso API) describen una condición operativa;
+        # no deben anular por sí solas dos horizontales geométricamente
+        # válidas. Si alguno de los tramos es dudoso, se conserva la
+        # protección histórica de tres evidencias concurrentes.
+        superior_geometricamente_valida = bool(
+            np.isfinite(pendiente_sup)
+            and pendiente_sup <= 0.15
+            and np.isfinite(extension_sup)
+            and extension_sup >= 0.08
+        )
+        inferior_geometricamente_valida = bool(
+            np.isfinite(pendiente_inf)
+            and pendiente_inf <= 0.18
+            and np.isfinite(extension_inf)
+            and extension_inf >= 0.06
+        )
+        ambas_geometricamente_validas = bool(
+            superior_geometricamente_valida
+            and inferior_geometricamente_valida
+        )
+
+        if gap <= 0:
+            confiables = False
+        elif ambas_geometricamente_validas:
+            confiables = True
+        else:
+            confiables = len(evidencias) < 3
         return {
             "confiables": bool(confiables),
             "estado": "HORIZONTALES_OK" if confiables else "HORIZONTALES_NO_ENCONTRADAS",
@@ -2317,6 +2356,18 @@ def procesar_json(origen, silencioso=True):
             "ratio_gap_api": ratio_gap_api,
             "pendiente_relativa_superior": pendiente_sup,
             "pendiente_relativa_inferior": pendiente_inf,
+            "extension_horizontal_superior_pct": float(
+                100.0 * extension_sup
+            ),
+            "extension_horizontal_inferior_pct": float(
+                100.0 * extension_inf
+            ),
+            "horizontal_superior_geometricamente_valida": (
+                superior_geometricamente_valida
+            ),
+            "horizontal_inferior_geometricamente_valida": (
+                inferior_geometricamente_valida
+            ),
         }
 
 
@@ -2395,6 +2446,22 @@ def procesar_json(origen, silencioso=True):
                 "Separacion_Sobre_Peso_API": calidad["ratio_gap_api"],
                 "Pendiente_Relativa_Superior": calidad["pendiente_relativa_superior"],
                 "Pendiente_Relativa_Inferior": calidad["pendiente_relativa_inferior"],
+                "Extension_Horizontal_Superior_pct": (
+                    calidad["extension_horizontal_superior_pct"]
+                ),
+                "Extension_Horizontal_Inferior_pct": (
+                    calidad["extension_horizontal_inferior_pct"]
+                ),
+                "Horizontal_Superior_Geometricamente_Valida": (
+                    calidad[
+                        "horizontal_superior_geometricamente_valida"
+                    ]
+                ),
+                "Horizontal_Inferior_Geometricamente_Valida": (
+                    calidad[
+                        "horizontal_inferior_geometricamente_valida"
+                    ]
+                ),
                 "Carga_Asc_Geometrica": carga_asc, "Carga_Desc_Geometrica": carga_desc,
                 "Separacion_Horizontales": carga_asc - carga_desc,
                 "Area_Real": area_poligono(posicion, carga), "Area_Ideal": area_ideal,
@@ -2426,6 +2493,9 @@ def procesar_json(origen, silencioso=True):
     display(resultados_cartas[[
         "CartaId", "Pozo", "Estado_Horizontales", "Evidencias_Horizontales",
         "Posible_Sin_Trabajo_Bomba", "Compacidad_Carta", "Separacion_Sobre_Peso_API",
+        "Pendiente_Relativa_Superior", "Pendiente_Relativa_Inferior",
+        "Extension_Horizontal_Superior_pct",
+        "Extension_Horizontal_Inferior_pct",
         "Llenado_Calculado_pct", "Llenado_API_pct", "Peso_Fluido_API_lbf",
         "Sumergencia_API_m",
     ]].round(3))

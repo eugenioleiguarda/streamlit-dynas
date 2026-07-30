@@ -50,7 +50,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-07-29-tendencias-bloqueo-v16"
+    "2026-07-30-horizontales-geometricas-v17"
 )
 
 COLORES = {
