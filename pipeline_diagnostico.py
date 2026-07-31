@@ -5310,7 +5310,7 @@ def procesar_json(origen, silencioso=True):
             and compacidad_carta
                 <= UMBRAL_COMPACIDAD_SIN_TRABAJO
         )
-        bloqueo_gas_probable = bool(
+        bloqueo_por_umbral_principal = bool(
             not carta_no_valida
             and np.isfinite(apertura_central_carta)
             and apertura_central_carta <= UMBRAL_APERTURA_CENTRAL_BLOQUEO
@@ -5324,6 +5324,24 @@ def procesar_json(origen, silencioso=True):
                     and compacidad_carta <= 0.25
                 )
             )
+        )
+
+        # Banda fronteriza: evita que cartas prácticamente iguales
+        # alternen entre bloqueo y compresión por unas décimas en el
+        # umbral de apertura. Se exige simultáneamente poca apertura
+        # central y una carta globalmente compacta; no se amplía el
+        # umbral de apertura de forma indiscriminada.
+        bloqueo_gas_fronterizo = bool(
+            not carta_no_valida
+            and np.isfinite(apertura_central_carta)
+            and np.isfinite(compacidad_carta)
+            and apertura_central_carta <= 0.27
+            and compacidad_carta <= 0.28
+        )
+
+        bloqueo_gas_probable = bool(
+            bloqueo_por_umbral_principal
+            or bloqueo_gas_fronterizo
         )
 
         sin_trabajo = bool(
@@ -5443,7 +5461,7 @@ def procesar_json(origen, silencioso=True):
             and posicion_cierre_50 >= 8.0
             and posicion_cierre_80 >= 12.0
             and separacion_ramas_inicial <= 12.0
-            and extension_ramas_juntas >= 6.0
+            and extension_ramas_juntas >= 8.0
         )
         if cierre_tardio_viajera:
             alertas.append(

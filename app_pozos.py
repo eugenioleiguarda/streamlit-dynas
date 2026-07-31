@@ -50,7 +50,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-07-30-cierre-viajera-ramas-v18"
+    "2026-07-31-bloqueo-fronterizo-v19"
 )
 
 COLORES = {
