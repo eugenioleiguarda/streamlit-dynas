@@ -2405,12 +2405,32 @@ def procesar_json(origen, silencioso=True):
             # Ventana estrecha para el patrón de fricción redondeada.
             # Las cotas superiores evitan corregir cartas de admisión
             # incompleta, donde el gran vacío derecho es el fenómeno real.
-            detectada = bool(
-                0.02 <= arqueo_sup <= 0.10
+            patron_redondeado_ambas_ramas = bool(
+                # La rama superior puede quedar casi plana aun cuando la
+                # fricción redondee de forma clara y sostenida la inferior.
+                # Se admite un arqueo superior prácticamente nulo, pero se
+                # conservan la curvatura opuesta, el arqueo inferior y el
+                # control del extremo derecho como condiciones conjuntas.
+                0.00 <= arqueo_sup <= 0.10
                 and 0.08 <= arqueo_inf <= 0.20
                 and -0.70 <= curvatura_sup <= -0.08
                 and 0.30 <= curvatura_inf <= 1.50
                 and desvio_inf_u85 <= 0.15
+            )
+            patron_asimetrico_rama_inferior = bool(
+                # Variante en la que la fricción se expresa principalmente
+                # como una cubeta inferior, mientras la rama superior queda
+                # prácticamente plana. Se mantiene una ventana estrecha para
+                # no confundirla con una transferencia de admisión derecha.
+                -0.01 <= arqueo_sup <= 0.08
+                and 0.06 <= arqueo_inf <= 0.20
+                and abs(curvatura_sup) <= 0.08
+                and 0.30 <= curvatura_inf <= 1.50
+                and desvio_inf_u85 <= 0.15
+            )
+            detectada = bool(
+                patron_redondeado_ambas_ramas
+                or patron_asimetrico_rama_inferior
             )
             salida["detectada"] = detectada
             if not detectada:
@@ -5598,21 +5618,27 @@ def procesar_json(origen, silencioso=True):
                     False,
                 )
             )
-            and bool(
-                resultado.get(
-                    "Correccion_Friccion_Aplicada",
-                    False,
-                )
-            )
         )
 
         if friccion_elevada:
             alertas.append("Posible fricción elevada")
-            evidencias.append(
-                "Ramas superior e inferior arqueadas en sentidos "
-                "opuestos; horizontales corregidas hacia niveles "
-                "interiores robustos"
-            )
+            if bool(
+                resultado.get(
+                    "Correccion_Friccion_Aplicada",
+                    False,
+                )
+            ):
+                evidencias.append(
+                    "Geometría compatible con fricción; "
+                    "horizontales corregidas hacia niveles "
+                    "interiores robustos"
+                )
+            else:
+                evidencias.append(
+                    "Cubeta sostenida en la rama inferior "
+                    "compatible con fricción asimétrica; "
+                    "la corrección no se aplicó por ser pequeña"
+                )
 
         # Recuperar vacíos.
         vacio_si = metrica.get(
@@ -6104,12 +6130,53 @@ def procesar_json(origen, silencioso=True):
             metrica["Datos_Operativos_Validos"]
         )
 
+        # Cuando la geometría redondeada fue corregida por fricción, el
+        # vacío derecho calculado con las horizontales originales puede
+        # imitar una compresión suave. Si, después de la corrección, el
+        # llenado vuelve a ser alto y existe sumergencia suficiente, se
+        # interpreta como oportunidad de extracción con fricción, no como
+        # admisión incompleta. No se anula un golpe de fluido ni una
+        # compresión marcada: solamente la variante suave.
+        friccion_reclasifica_compresion_suave = bool(
+            bool(
+                resultado.get(
+                    "Correccion_Friccion_Aplicada",
+                    False,
+                )
+            )
+            and compresion_gas
+            and compresion_gas_suave
+            and datos_operativos_validos
+            and np.isfinite(llenado_operativo)
+            and np.isfinite(sumergencia_relativa)
+            and llenado_operativo >= 85.0
+            and sumergencia_relativa >= 10.0
+        )
+
+        if friccion_reclasifica_compresion_suave:
+            compresion_gas = False
+            compresion_gas_suave = False
+            severidad_admision = "NO_APLICA"
+            alertas = [
+                alerta
+                for alerta in alertas
+                if alerta
+                != "Posible compresión/interferencia de gas"
+            ]
+            evidencias.append(
+                "La corrección por fricción recupera llenado alto; "
+                "se descarta compresión suave como causa principal"
+            )
+
         subexplotado = bool(
             horizontales_ok
             and not sin_trabajo
             and not golpe_fluido
             and not compresion_gas
-            and not transferencia_inferior_sostenida
+            and (
+                not transferencia_inferior_sostenida
+                or friccion_reclasifica_compresion_suave
+            )
             and datos_operativos_validos
             and np.isfinite(llenado_operativo)
             and np.isfinite(sumergencia_relativa)
