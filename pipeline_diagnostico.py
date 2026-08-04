@@ -5960,7 +5960,11 @@ def procesar_json(origen, silencioso=True):
             and np.isfinite(vacio_sd)
             and np.isfinite(vacio_id)
             and np.isfinite(llenado)
-            and vacio_sd >= 4.0
+            # Sin una transferencia medible, un vacío superior
+            # derecho pequeño no alcanza para inferir admisión.
+            # Ese patrón aparece también en cartas casi llenas con
+            # golpe de bomba y generaba falsos positivos de gas.
+            and vacio_sd >= 12.0
             and vacio_id >= 20.0
             and llenado < 92.0
         )
@@ -6128,6 +6132,11 @@ def procesar_json(origen, silencioso=True):
             golpe_bomba
             and horizontales_ok
             and not sin_trabajo
+            # Golpe de fluido y compresión de gas representan dos
+            # formas alternativas de la transferencia de admisión.
+            # No se permite que este respaldo agregue golpe de fluido
+            # a una carta ya clasificada como compresión.
+            and not compresion_gas
             and transferencia_inferior_sostenida
             and np.isfinite(extension_despegue_inferior)
             and extension_despegue_inferior >= 5.0
@@ -6135,7 +6144,7 @@ def procesar_json(origen, silencioso=True):
             and np.isfinite(vacio_sd)
             and np.isfinite(vacio_id)
             and 85.0 <= llenado <= 92.0
-            and vacio_sd >= 4.0
+            and vacio_sd >= 12.0
             and vacio_id >= 15.0
         )
 
