@@ -5609,7 +5609,7 @@ def procesar_json(origen, silencioso=True):
             == "HORIZONTALES_OK"
         )
 
-        friccion_elevada = bool(
+        friccion_geometrica_fuerte = bool(
             horizontales_ok
             and not sin_trabajo
             and bool(
@@ -5618,6 +5618,68 @@ def procesar_json(origen, silencioso=True):
                     False,
                 )
             )
+        )
+
+        # Respaldo conservador para una cubeta inferior persistente que
+        # cambia de curvatura entre cartas consecutivas. Esta variante solo
+        # agrega la alerta: no modifica las horizontales ni el llenado. Se
+        # limita a cartas llenas y con sumergencia alta para no confundirla
+        # con admisión incompleta o compresión de gas.
+        arqueo_sup_friccion = pd.to_numeric(
+            resultado.get(
+                "Arqueo_Superior_Friccion_pct_gap",
+                np.nan,
+            ),
+            errors="coerce",
+        )
+        arqueo_inf_friccion = pd.to_numeric(
+            resultado.get(
+                "Arqueo_Inferior_Friccion_pct_gap",
+                np.nan,
+            ),
+            errors="coerce",
+        )
+        curvatura_sup_friccion = pd.to_numeric(
+            resultado.get(
+                "Curvatura_Superior_Friccion",
+                np.nan,
+            ),
+            errors="coerce",
+        )
+        curvatura_inf_friccion = pd.to_numeric(
+            resultado.get(
+                "Curvatura_Inferior_Friccion",
+                np.nan,
+            ),
+            errors="coerce",
+        )
+        llenado_preliminar_friccion = pd.to_numeric(
+            metrica.get(
+                "Area_Dentro_Carta_Ideal_pct",
+                np.nan,
+            ),
+            errors="coerce",
+        )
+        friccion_asimetrica_suave = bool(
+            horizontales_ok
+            and not sin_trabajo
+            and np.isfinite(sumergencia_preliminar)
+            and sumergencia_preliminar >= 20.0
+            and np.isfinite(llenado_preliminar_friccion)
+            and llenado_preliminar_friccion >= 85.0
+            and np.isfinite(arqueo_sup_friccion)
+            and -2.0 <= arqueo_sup_friccion <= 8.0
+            and np.isfinite(arqueo_inf_friccion)
+            and 3.5 <= arqueo_inf_friccion <= 13.0
+            and np.isfinite(curvatura_sup_friccion)
+            and -0.40 <= curvatura_sup_friccion <= 0.40
+            and np.isfinite(curvatura_inf_friccion)
+            and -0.10 <= curvatura_inf_friccion <= 1.50
+        )
+
+        friccion_elevada = bool(
+            friccion_geometrica_fuerte
+            or friccion_asimetrica_suave
         )
 
         if friccion_elevada:
@@ -5633,11 +5695,16 @@ def procesar_json(origen, silencioso=True):
                     "horizontales corregidas hacia niveles "
                     "interiores robustos"
                 )
-            else:
+            elif friccion_asimetrica_suave:
                 evidencias.append(
                     "Cubeta sostenida en la rama inferior "
-                    "compatible con fricción asimétrica; "
-                    "la corrección no se aplicó por ser pequeña"
+                    "compatible con fricción asimétrica en una "
+                    "carta llena y con sumergencia alta"
+                )
+            else:
+                evidencias.append(
+                    "Geometría compatible con fricción; la "
+                    "corrección de horizontales no resultó material"
                 )
 
         # Recuperar vacíos.

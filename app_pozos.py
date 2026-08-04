@@ -50,7 +50,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-04-friccion-asimetrica-v23"
+    "2026-08-04-friccion-cubeta-v25"
 )
 
 COLORES = {
