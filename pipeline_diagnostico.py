@@ -5609,14 +5609,42 @@ def procesar_json(origen, silencioso=True):
             == "HORIZONTALES_OK"
         )
 
+        friccion_detectada_geometricamente = bool(
+            resultado.get(
+                "Friccion_Elevada_Geometrica",
+                False,
+            )
+        )
+        correccion_friccion_aplicada = bool(
+            resultado.get(
+                "Correccion_Friccion_Aplicada",
+                False,
+            )
+        )
+        curvatura_inferior_friccion = pd.to_numeric(
+            resultado.get(
+                "Curvatura_Inferior_Friccion",
+                np.nan,
+            ),
+            errors="coerce",
+        )
+
+        # Si el patrón preliminar no produce una corrección coherente
+        # del gap, se exige una cubeta inferior inequívocamente marcada.
+        # Esto evita etiquetar como fricción una ondulación moderada
+        # asociada a una transferencia derecha de admisión incompleta.
+        respaldo_friccion_sin_correccion = bool(
+            np.isfinite(curvatura_inferior_friccion)
+            and curvatura_inferior_friccion >= 0.80
+        )
+
         friccion_geometrica_fuerte = bool(
             horizontales_ok
             and not sin_trabajo
-            and bool(
-                resultado.get(
-                    "Friccion_Elevada_Geometrica",
-                    False,
-                )
+            and friccion_detectada_geometricamente
+            and (
+                correccion_friccion_aplicada
+                or respaldo_friccion_sin_correccion
             )
         )
 
@@ -6100,6 +6128,9 @@ def procesar_json(origen, silencioso=True):
             golpe_bomba
             and horizontales_ok
             and not sin_trabajo
+            and transferencia_inferior_sostenida
+            and np.isfinite(extension_despegue_inferior)
+            and extension_despegue_inferior >= 5.0
             and np.isfinite(llenado)
             and np.isfinite(vacio_sd)
             and np.isfinite(vacio_id)
@@ -6134,6 +6165,18 @@ def procesar_json(origen, silencioso=True):
             metrica["Datos_Operativos_Validos"]
         )
 
+        # Para evaluar una oportunidad de subexplotación solamente se
+        # necesitan el llenado de la carta y una sumergencia relativa
+        # utilizable. El peso de fluido API puede venir nulo o igual a cero
+        # aunque la sumergencia informada sea válida; ese faltante no debe
+        # bloquear por sí solo este diagnóstico.
+        datos_subexplotacion_validos = bool(
+            np.isfinite(llenado_operativo)
+            and 0.0 <= llenado_operativo <= 140.0
+            and np.isfinite(sumergencia_relativa)
+            and sumergencia_relativa >= 0.0
+        )
+
         # Cuando la geometría redondeada fue corregida por fricción, el
         # vacío derecho calculado con las horizontales originales puede
         # imitar una compresión suave. Si, después de la corrección, el
@@ -6150,7 +6193,7 @@ def procesar_json(origen, silencioso=True):
             )
             and compresion_gas
             and compresion_gas_suave
-            and datos_operativos_validos
+            and datos_subexplotacion_validos
             and np.isfinite(llenado_operativo)
             and np.isfinite(sumergencia_relativa)
             and llenado_operativo >= 85.0
@@ -6181,7 +6224,7 @@ def procesar_json(origen, silencioso=True):
                 not transferencia_inferior_sostenida
                 or friccion_reclasifica_compresion_suave
             )
-            and datos_operativos_validos
+            and datos_subexplotacion_validos
             and np.isfinite(llenado_operativo)
             and np.isfinite(sumergencia_relativa)
             and llenado_operativo >= 85.0
