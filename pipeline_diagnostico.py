@@ -5620,67 +5620,10 @@ def procesar_json(origen, silencioso=True):
             )
         )
 
-        # Respaldo conservador para una cubeta inferior persistente que
-        # cambia de curvatura entre cartas consecutivas. Esta variante solo
-        # agrega la alerta: no modifica las horizontales ni el llenado. Se
-        # limita a cartas llenas y con sumergencia alta para no confundirla
-        # con admisión incompleta o compresión de gas.
-        arqueo_sup_friccion = pd.to_numeric(
-            resultado.get(
-                "Arqueo_Superior_Friccion_pct_gap",
-                np.nan,
-            ),
-            errors="coerce",
-        )
-        arqueo_inf_friccion = pd.to_numeric(
-            resultado.get(
-                "Arqueo_Inferior_Friccion_pct_gap",
-                np.nan,
-            ),
-            errors="coerce",
-        )
-        curvatura_sup_friccion = pd.to_numeric(
-            resultado.get(
-                "Curvatura_Superior_Friccion",
-                np.nan,
-            ),
-            errors="coerce",
-        )
-        curvatura_inf_friccion = pd.to_numeric(
-            resultado.get(
-                "Curvatura_Inferior_Friccion",
-                np.nan,
-            ),
-            errors="coerce",
-        )
-        llenado_preliminar_friccion = pd.to_numeric(
-            metrica.get(
-                "Area_Dentro_Carta_Ideal_pct",
-                np.nan,
-            ),
-            errors="coerce",
-        )
-        friccion_asimetrica_suave = bool(
-            horizontales_ok
-            and not sin_trabajo
-            and np.isfinite(sumergencia_preliminar)
-            and sumergencia_preliminar >= 20.0
-            and np.isfinite(llenado_preliminar_friccion)
-            and llenado_preliminar_friccion >= 85.0
-            and np.isfinite(arqueo_sup_friccion)
-            and -2.0 <= arqueo_sup_friccion <= 8.0
-            and np.isfinite(arqueo_inf_friccion)
-            and 3.5 <= arqueo_inf_friccion <= 13.0
-            and np.isfinite(curvatura_sup_friccion)
-            and -0.40 <= curvatura_sup_friccion <= 0.40
-            and np.isfinite(curvatura_inf_friccion)
-            and -0.10 <= curvatura_inf_friccion <= 1.50
-        )
-
-        friccion_elevada = bool(
-            friccion_geometrica_fuerte
-            or friccion_asimetrica_suave
-        )
+        # La fricción por carta se asigna solamente cuando la geometría
+        # cumple el detector fuerte. Los patrones suaves se evalúan luego
+        # en contexto temporal, usando cartas vecinas del mismo pozo.
+        friccion_elevada = friccion_geometrica_fuerte
 
         if friccion_elevada:
             alertas.append("Posible fricción elevada")
@@ -5694,12 +5637,6 @@ def procesar_json(origen, silencioso=True):
                     "Geometría compatible con fricción; "
                     "horizontales corregidas hacia niveles "
                     "interiores robustos"
-                )
-            elif friccion_asimetrica_suave:
-                evidencias.append(
-                    "Cubeta sostenida en la rama inferior "
-                    "compatible con fricción asimétrica en una "
-                    "carta llena y con sumergencia alta"
                 )
             else:
                 evidencias.append(
@@ -6729,6 +6666,253 @@ def procesar_json(origen, silencioso=True):
     diagnosticos_cartas = pd.DataFrame(
         filas_diagnosticos
     )
+
+    # ------------------------------------------------------------
+    # PROPAGACIÓN TEMPORAL DE FRICCIÓN DESACTIVADA
+    # ------------------------------------------------------------
+    # Una cubeta suave aislada es muy frecuente y no alcanza para
+    # diagnosticar fricción. Solo se propaga la alerta cuando el mismo
+    # pozo presenta al menos dos cartas con firma geométrica fuerte y la
+    # carta candidata está temporalmente próxima a esas observaciones.
+    if False and (
+        not diagnosticos_cartas.empty
+        and not base_diagnosticos.empty
+        and "Friccion_Elevada_Geometrica"
+            in base_diagnosticos.columns
+    ):
+        campos_contexto_friccion = [
+            "CartaId",
+            "Friccion_Elevada_Geometrica",
+            "Arqueo_Superior_Friccion_pct_gap",
+            "Arqueo_Inferior_Friccion_pct_gap",
+            "Curvatura_Superior_Friccion",
+            "Curvatura_Inferior_Friccion",
+        ]
+
+        contexto_friccion = (
+            base_diagnosticos[
+                [
+                    campo
+                    for campo in campos_contexto_friccion
+                    if campo in base_diagnosticos.columns
+                ]
+            ]
+            .drop_duplicates("CartaId", keep="last")
+            .set_index("CartaId")
+        )
+
+        fechas_contexto = pd.to_datetime(
+            diagnosticos_cartas["Fecha"],
+            errors="coerce",
+        )
+
+        for pozo, indices_pozo in diagnosticos_cartas.groupby(
+            "Pozo",
+            sort=False,
+        ).groups.items():
+            indices_pozo = list(indices_pozo)
+            semillas = []
+
+            for indice in indices_pozo:
+                carta_id = diagnosticos_cartas.at[indice, "CartaId"]
+                if carta_id not in contexto_friccion.index:
+                    continue
+
+                fila_contexto = contexto_friccion.loc[carta_id]
+                es_semilla = bool(
+                    fila_contexto.get(
+                        "Friccion_Elevada_Geometrica",
+                        False,
+                    )
+                )
+                es_semilla = bool(
+                    es_semilla
+                    and not bool(
+                        diagnosticos_cartas.at[
+                            indice,
+                            "Carta_No_Valida",
+                        ]
+                    )
+                    and not bool(
+                        diagnosticos_cartas.at[
+                            indice,
+                            "Sin_Trabajo_Bomba",
+                        ]
+                    )
+                    and not bool(
+                        diagnosticos_cartas.at[
+                            indice,
+                            "Golpe_Fluido",
+                        ]
+                    )
+                    and not bool(
+                        diagnosticos_cartas.at[
+                            indice,
+                            "Compresion_Gas",
+                        ]
+                    )
+                )
+                if es_semilla:
+                    semillas.append(indice)
+
+            # Una única detección fuerte no autoriza a etiquetar el
+            # resto de las cartas del pozo.
+            if len(semillas) < 2:
+                continue
+
+            fechas_semillas = fechas_contexto.loc[semillas].dropna()
+            if fechas_semillas.empty:
+                continue
+
+            for indice in indices_pozo:
+                if indice in semillas:
+                    continue
+
+                if any(
+                    bool(diagnosticos_cartas.at[indice, campo])
+                    for campo in [
+                        "Carta_No_Valida",
+                        "Sin_Trabajo_Bomba",
+                        "Golpe_Fluido",
+                        "Compresion_Gas",
+                    ]
+                ):
+                    continue
+
+                fecha_candidata = fechas_contexto.loc[indice]
+                if pd.isna(fecha_candidata):
+                    continue
+
+                distancia_horas = (
+                    (fechas_semillas - fecha_candidata)
+                    .abs()
+                    .dt.total_seconds()
+                    .div(3600.0)
+                    .min()
+                )
+                if not np.isfinite(distancia_horas) or distancia_horas > 6.0:
+                    continue
+
+                carta_id = diagnosticos_cartas.at[indice, "CartaId"]
+                if carta_id not in contexto_friccion.index:
+                    continue
+                fila_contexto = contexto_friccion.loc[carta_id]
+
+                arqueo_sup = pd.to_numeric(
+                    fila_contexto.get(
+                        "Arqueo_Superior_Friccion_pct_gap",
+                        np.nan,
+                    ),
+                    errors="coerce",
+                )
+                arqueo_inf = pd.to_numeric(
+                    fila_contexto.get(
+                        "Arqueo_Inferior_Friccion_pct_gap",
+                        np.nan,
+                    ),
+                    errors="coerce",
+                )
+                curv_sup = pd.to_numeric(
+                    fila_contexto.get(
+                        "Curvatura_Superior_Friccion",
+                        np.nan,
+                    ),
+                    errors="coerce",
+                )
+                curv_inf = pd.to_numeric(
+                    fila_contexto.get(
+                        "Curvatura_Inferior_Friccion",
+                        np.nan,
+                    ),
+                    errors="coerce",
+                )
+                llenado = pd.to_numeric(
+                    diagnosticos_cartas.at[
+                        indice,
+                        "Llenado_Operativo_pct",
+                    ],
+                    errors="coerce",
+                )
+                sumergencia = pd.to_numeric(
+                    diagnosticos_cartas.at[
+                        indice,
+                        "Sumergencia_Relativa_pct",
+                    ],
+                    errors="coerce",
+                )
+
+                forma_compatible = bool(
+                    np.isfinite(llenado)
+                    and llenado >= 85.0
+                    and np.isfinite(sumergencia)
+                    and sumergencia >= 20.0
+                    and np.isfinite(arqueo_sup)
+                    and -2.0 <= arqueo_sup <= 8.0
+                    and np.isfinite(arqueo_inf)
+                    and 3.5 <= arqueo_inf <= 13.0
+                    and np.isfinite(curv_sup)
+                    and -0.40 <= curv_sup <= 0.40
+                    and np.isfinite(curv_inf)
+                    and -0.10 <= curv_inf <= 1.50
+                )
+                if not forma_compatible:
+                    continue
+
+                diagnosticos_cartas.at[
+                    indice,
+                    "Friccion_Elevada",
+                ] = True
+
+                alertas_contexto = diagnosticos_cartas.at[
+                    indice,
+                    "Alertas",
+                ]
+                alertas_contexto = (
+                    list(alertas_contexto)
+                    if isinstance(alertas_contexto, list)
+                    else []
+                )
+                if "Posible fricción elevada" not in alertas_contexto:
+                    alertas_contexto.append("Posible fricción elevada")
+                diagnosticos_cartas.at[indice, "Alertas"] = alertas_contexto
+
+                evidencias_contexto = diagnosticos_cartas.at[
+                    indice,
+                    "Evidencias",
+                ]
+                evidencias_contexto = (
+                    list(evidencias_contexto)
+                    if isinstance(evidencias_contexto, list)
+                    else []
+                )
+                evidencias_contexto.append(
+                    "Patrón suave compatible con fricción y repetido "
+                    "en cartas cercanas del mismo pozo"
+                )
+                diagnosticos_cartas.at[
+                    indice,
+                    "Evidencias",
+                ] = evidencias_contexto
+
+                if (
+                    diagnosticos_cartas.at[
+                        indice,
+                        "Diagnostico_Principal",
+                    ]
+                    == "Pozo bien explotado"
+                ):
+                    diagnosticos_cartas.at[
+                        indice,
+                        "Diagnostico_Principal",
+                    ] = "Posible fricción elevada"
+                    diagnosticos_cartas.at[
+                        indice,
+                        "Accion_Sugerida",
+                    ] = (
+                        "Revisar rozamiento de sarta, tubing, "
+                        "alineación y condiciones mecánicas"
+                    )
+                    diagnosticos_cartas.at[indice, "Confianza"] = 0.62
 
 
     print(
