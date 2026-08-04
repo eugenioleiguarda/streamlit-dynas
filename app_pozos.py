@@ -50,7 +50,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-07-31-bloqueo-fronterizo-v19"
+    "2026-08-04-friccion-redondeada-v20"
 )
 
 COLORES = {
@@ -63,6 +63,7 @@ COLORES = {
     "Posible golpe de bomba": "#e11d48",
     "Posible tubing libre": "#795548",
     "Posible cierre tardío de válvula viajera": "#a855f7",
+    "Posible fricción elevada": "#b45309",
     "Pozo bien explotado": "#14b8a6",
     "Exceso de torque": "#dc2626",
     "Exceso de carga estructural": "#991b1b",

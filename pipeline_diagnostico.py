@@ -2279,6 +2279,170 @@ def procesar_json(origen, silencioso=True):
         }
 
 
+    def corregir_horizontales_por_friccion_redondeada(
+        posicion,
+        carga,
+        ascendente,
+        descendente,
+        linea_asc,
+        linea_desc,
+    ):
+        """
+        Acerca ambas horizontales cuando las ramas presentan el arqueo
+        opuesto y sostenido característico de fricción.
+
+        La corrección es deliberadamente conservadora: no se activa por
+        una loma puntual ni por un vacío derecho aislado. Exige que la
+        meseta superior esté arqueada hacia abajo, la inferior hacia
+        arriba y que los niveles robustos interiores reduzcan el gap en
+        proporciones acotadas. Devuelve además métricas auditables.
+        """
+        asc_corregida = dict(linea_asc)
+        desc_corregida = dict(linea_desc)
+        carga_sup_original = float(
+            linea_asc["carga_representativa"]
+        )
+        carga_inf_original = float(
+            linea_desc["carga_representativa"]
+        )
+        salida = {
+            "detectada": False,
+            "aplicada": False,
+            "carga_sup_original": carga_sup_original,
+            "carga_inf_original": carga_inf_original,
+            "carga_sup_corregida": carga_sup_original,
+            "carga_inf_corregida": carga_inf_original,
+            "arqueo_superior_pct_gap": np.nan,
+            "arqueo_inferior_pct_gap": np.nan,
+            "curvatura_superior": np.nan,
+            "curvatura_inferior": np.nan,
+            "desvio_inferior_u85_pct_gap": np.nan,
+            "reduccion_gap_pct": 0.0,
+        }
+
+        try:
+            x_total = np.asarray(posicion, dtype=float)
+            y_total = np.asarray(carga, dtype=float)
+            rango_x = float(np.ptp(x_total))
+            rango_y = float(np.ptp(y_total))
+            gap_original = carga_sup_original - carga_inf_original
+            if (
+                rango_x <= 1e-9
+                or rango_y <= 1e-9
+                or gap_original <= 1e-9
+            ):
+                return asc_corregida, desc_corregida, salida
+
+            x_min = float(np.nanmin(x_total))
+            grilla_u = np.linspace(0.12, 0.88, 61)
+            grilla_x = x_min + rango_x * grilla_u
+
+            def interpolar_rama_robusta(rama):
+                tabla = pd.DataFrame({
+                    "x": np.asarray(rama["posicion"], dtype=float),
+                    "y": np.asarray(rama["carga"], dtype=float),
+                })
+                tabla = tabla.replace(
+                    [np.inf, -np.inf], np.nan
+                ).dropna()
+                tabla = (
+                    tabla.groupby("x", as_index=False)["y"]
+                    .median()
+                    .sort_values("x")
+                )
+                if len(tabla) < 4:
+                    return None
+                return np.interp(
+                    grilla_x,
+                    tabla["x"].to_numpy(dtype=float),
+                    tabla["y"].to_numpy(dtype=float),
+                )
+
+            y_sup = interpolar_rama_robusta(ascendente)
+            y_inf = interpolar_rama_robusta(descendente)
+            if y_sup is None or y_inf is None:
+                return asc_corregida, desc_corregida, salida
+
+            # Niveles interiores robustos. No se usan extremos para evitar
+            # que un pico, impacto o loma puntual mueva las horizontales.
+            nivel_sup_interior = float(np.nanquantile(y_sup, 0.20))
+            nivel_inf_interior = float(np.nanquantile(y_inf, 0.80))
+            arqueo_sup = (
+                carga_sup_original - nivel_sup_interior
+            ) / gap_original
+            arqueo_inf = (
+                nivel_inf_interior - carga_inf_original
+            ) / gap_original
+
+            coef_sup = np.polyfit(
+                grilla_u - 0.50,
+                y_sup / rango_y,
+                2,
+            )
+            coef_inf = np.polyfit(
+                grilla_u - 0.50,
+                y_inf / rango_y,
+                2,
+            )
+            curvatura_sup = float(coef_sup[0])
+            curvatura_inf = float(coef_inf[0])
+
+            indice_u85 = int(np.argmin(np.abs(grilla_u - 0.85)))
+            desvio_inf_u85 = (
+                y_inf[indice_u85] - nivel_inf_interior
+            ) / gap_original
+
+            salida.update({
+                "arqueo_superior_pct_gap": float(100.0 * arqueo_sup),
+                "arqueo_inferior_pct_gap": float(100.0 * arqueo_inf),
+                "curvatura_superior": curvatura_sup,
+                "curvatura_inferior": curvatura_inf,
+                "desvio_inferior_u85_pct_gap": float(
+                    100.0 * desvio_inf_u85
+                ),
+            })
+
+            # Ventana estrecha para el patrón de fricción redondeada.
+            # Las cotas superiores evitan corregir cartas de admisión
+            # incompleta, donde el gran vacío derecho es el fenómeno real.
+            detectada = bool(
+                0.02 <= arqueo_sup <= 0.10
+                and 0.08 <= arqueo_inf <= 0.20
+                and -0.70 <= curvatura_sup <= -0.08
+                and 0.30 <= curvatura_inf <= 1.50
+                and desvio_inf_u85 <= 0.15
+            )
+            salida["detectada"] = detectada
+            if not detectada:
+                return asc_corregida, desc_corregida, salida
+
+            nuevo_gap = nivel_sup_interior - nivel_inf_interior
+            proporcion_gap = nuevo_gap / gap_original
+            if not (0.70 <= proporcion_gap <= 0.90):
+                return asc_corregida, desc_corregida, salida
+
+            asc_corregida["carga_representativa"] = (
+                nivel_sup_interior
+            )
+            desc_corregida["carga_representativa"] = (
+                nivel_inf_interior
+            )
+            asc_corregida["horizontal_corregida_friccion"] = True
+            desc_corregida["horizontal_corregida_friccion"] = True
+            salida.update({
+                "aplicada": True,
+                "carga_sup_corregida": nivel_sup_interior,
+                "carga_inf_corregida": nivel_inf_interior,
+                "reduccion_gap_pct": float(
+                    100.0 * (1.0 - proporcion_gap)
+                ),
+            })
+        except Exception:
+            return dict(linea_asc), dict(linea_desc), salida
+
+        return asc_corregida, desc_corregida, salida
+
+
     def evaluar_horizontales(
         posicion, carga, asc, desc, linea_asc, linea_desc,
         peso_api, llenado_api,
@@ -2393,6 +2557,17 @@ def procesar_json(origen, silencioso=True):
                 rango_carga_total=np.ptp(carga),
             )
 
+            linea_asc, linea_desc, correccion_friccion = (
+                corregir_horizontales_por_friccion_redondeada(
+                    posicion=posicion,
+                    carga=carga,
+                    ascendente=asc,
+                    descendente=desc,
+                    linea_asc=linea_asc,
+                    linea_desc=linea_desc,
+                )
+            )
+
             calidad = evaluar_horizontales(
                 posicion, carga, asc, desc, linea_asc, linea_desc,
                 peso_api, llenado_api,
@@ -2463,6 +2638,33 @@ def procesar_json(origen, silencioso=True):
                     ]
                 ),
                 "Carga_Asc_Geometrica": carga_asc, "Carga_Desc_Geometrica": carga_desc,
+                "Friccion_Elevada_Geometrica": (
+                    correccion_friccion["detectada"]
+                ),
+                "Correccion_Friccion_Aplicada": (
+                    correccion_friccion["aplicada"]
+                ),
+                "Carga_Asc_Antes_Friccion": (
+                    correccion_friccion["carga_sup_original"]
+                ),
+                "Carga_Desc_Antes_Friccion": (
+                    correccion_friccion["carga_inf_original"]
+                ),
+                "Arqueo_Superior_Friccion_pct_gap": (
+                    correccion_friccion["arqueo_superior_pct_gap"]
+                ),
+                "Arqueo_Inferior_Friccion_pct_gap": (
+                    correccion_friccion["arqueo_inferior_pct_gap"]
+                ),
+                "Curvatura_Superior_Friccion": (
+                    correccion_friccion["curvatura_superior"]
+                ),
+                "Curvatura_Inferior_Friccion": (
+                    correccion_friccion["curvatura_inferior"]
+                ),
+                "Reduccion_Gap_Friccion_pct": (
+                    correccion_friccion["reduccion_gap_pct"]
+                ),
                 "Separacion_Horizontales": carga_asc - carga_desc,
                 "Area_Real": area_poligono(posicion, carga), "Area_Ideal": area_ideal,
                 "Llenado_Calculado_pct": llenado_calculado,
@@ -5387,6 +5589,31 @@ def procesar_json(origen, silencioso=True):
             == "HORIZONTALES_OK"
         )
 
+        friccion_elevada = bool(
+            horizontales_ok
+            and not sin_trabajo
+            and bool(
+                resultado.get(
+                    "Friccion_Elevada_Geometrica",
+                    False,
+                )
+            )
+            and bool(
+                resultado.get(
+                    "Correccion_Friccion_Aplicada",
+                    False,
+                )
+            )
+        )
+
+        if friccion_elevada:
+            alertas.append("Posible fricción elevada")
+            evidencias.append(
+                "Ramas superior e inferior arqueadas en sentidos "
+                "opuestos; horizontales corregidas hacia niveles "
+                "interiores robustos"
+            )
+
         # Recuperar vacíos.
         vacio_si = metrica.get(
             "Area_Faltante_Superior_Izquierdo_pct",
@@ -6077,6 +6304,7 @@ def procesar_json(origen, silencioso=True):
             golpe_bomba = False
             tubing_libre = False
             subexplotado = False
+            friccion_elevada = False
 
         # La falta de trabajo efectivo es incompatible con los
         # diagnósticos que requieren una bomba operando. Se conservan
@@ -6088,6 +6316,7 @@ def procesar_json(origen, silencioso=True):
                 "Posible compresión/interferencia de gas",
                 "Posible pérdida en válvula viajera",
                 "Posible tubing libre",
+                "Posible fricción elevada",
             }
             diagnosticos_incompatibles.add(
                 "Posible cierre tardío de válvula viajera"
@@ -6108,6 +6337,7 @@ def procesar_json(origen, silencioso=True):
             severidad_admision = "NO_APLICA"
             tubing_libre = False
             subexplotado = False
+            friccion_elevada = False
 
         # El exceso de torque y el exceso de carga estructural
         # permanecen como alertas operativas. No reemplazan el
@@ -6162,6 +6392,13 @@ def procesar_json(origen, silencioso=True):
             diagnostico_principal = "Posible tubing libre"
             accion = "Revisar condición y anclaje del tubing"
             confianza = 0.68
+        elif friccion_elevada:
+            diagnostico_principal = "Posible fricción elevada"
+            accion = (
+                "Revisar rozamiento de sarta, tubing, alineación "
+                "y condiciones mecánicas"
+            )
+            confianza = 0.70
         elif exceso_torque:
             diagnostico_principal = "Exceso de torque"
             accion = (
@@ -6284,6 +6521,30 @@ def procesar_json(origen, silencioso=True):
                 metricas_golpe["Golpe_Localizado_Izquierda"],
             "Tubing_Libre":
                 tubing_libre,
+            "Friccion_Elevada":
+                friccion_elevada,
+            "Correccion_Friccion_Aplicada":
+                bool(
+                    resultado.get(
+                        "Correccion_Friccion_Aplicada",
+                        False,
+                    )
+                ),
+            "Arqueo_Superior_Friccion_pct_gap":
+                resultado.get(
+                    "Arqueo_Superior_Friccion_pct_gap",
+                    np.nan,
+                ),
+            "Arqueo_Inferior_Friccion_pct_gap":
+                resultado.get(
+                    "Arqueo_Inferior_Friccion_pct_gap",
+                    np.nan,
+                ),
+            "Reduccion_Gap_Friccion_pct":
+                resultado.get(
+                    "Reduccion_Gap_Friccion_pct",
+                    np.nan,
+                ),
             "Angulo_Tubing_Izquierdo_deg":
                 angulo_tubing_izquierdo,
 
