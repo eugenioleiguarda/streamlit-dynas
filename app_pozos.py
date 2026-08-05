@@ -50,7 +50,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-04-friccion-individual-fuerte-v27"
+    "2026-08-05-prioridad-tendencia-admision-v28"
 )
 
 COLORES = {

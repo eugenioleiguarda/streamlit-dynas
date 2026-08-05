@@ -643,13 +643,10 @@ def analizar_falta_aporte_temporal(
             f"{eficiencia_pend:+.2f}%/día."
         )
 
-    if volatil:
-        estado, color, confianza = (
-            "Comportamiento temporal volátil",
-            "#9333ea",
-            "Media",
-        )
-    elif (
+    # Primero se determina si existe una dirección temporal coherente.
+    # La volatilidad se aplica después como calificativo secundario para
+    # evitar que oculte un deterioro o una recuperación bien sustentados.
+    if (
         signos_deterioro >= 3
         and llenado_restringido
         and (
@@ -695,11 +692,24 @@ def analizar_falta_aporte_temporal(
             "#0284c7",
             "Media",
         )
+    elif volatil:
+        estado, color, confianza = (
+            "Comportamiento temporal volátil",
+            "#9333ea",
+            "Media",
+        )
     else:
         estado, color, confianza = (
             "Evolución temporal no concluyente",
             "#64748b",
             "Media",
+        )
+
+    if volatil and estado != "Comportamiento temporal volátil":
+        estado += " — con comportamiento volátil"
+        evidencias.append(
+            "La dispersión es relevante, pero no invalida la dirección "
+            "temporal predominante."
         )
 
     if diagnostico_robusto:
@@ -5960,11 +5970,7 @@ def procesar_json(origen, silencioso=True):
             and np.isfinite(vacio_sd)
             and np.isfinite(vacio_id)
             and np.isfinite(llenado)
-            # Sin una transferencia medible, un vacío superior
-            # derecho pequeño no alcanza para inferir admisión.
-            # Ese patrón aparece también en cartas casi llenas con
-            # golpe de bomba y generaba falsos positivos de gas.
-            and vacio_sd >= 12.0
+            and vacio_sd >= 4.0
             and vacio_id >= 20.0
             and llenado < 92.0
         )
@@ -6123,6 +6129,42 @@ def procesar_json(origen, silencioso=True):
                 "localizada en el extremo izquierdo de la descendente"
             )
 
+        # Si la transferencia derecha no pudo medirse y la carta conserva
+        # un llenado alto, un vacío superior pequeño y solamente un
+        # vacío inferior moderado, no se atribuye automáticamente la
+        # geometría a gas cuando existe un golpe de bomba izquierdo fuerte.
+        # En esta familia el impacto domina la deformación y el respaldo de
+        # transferencia no aporta evidencia independiente de admisión.
+        admision_no_confirmada_por_golpe_izquierdo = bool(
+            compresion_gas
+            and transferencia_progresiva_inferida
+            and golpe_bomba
+            and np.isfinite(llenado)
+            and np.isfinite(vacio_sd)
+            and np.isfinite(vacio_id)
+            and llenado >= 85.0
+            and vacio_sd < 12.0
+            and vacio_id < 45.0
+            and metricas_golpe[
+                "Profundidad_Golpe_Inferior_pct"
+            ] >= 20.0
+        )
+
+        if admision_no_confirmada_por_golpe_izquierdo:
+            compresion_gas = False
+            compresion_gas_suave = False
+            severidad_admision = None
+            alertas = [
+                alerta
+                for alerta in alertas
+                if alerta
+                != "Posible compresión/interferencia de gas"
+            ]
+            evidencias.append(
+                "Transferencia derecha no confirmada; geometría "
+                "dominada por golpe de bomba izquierdo"
+            )
+
         # Respaldo muy acotado para cartas fronterizas en las que coexisten
         # un golpe de bomba a la izquierda y un llenado incompleto asociado
         # a la transferencia derecha. Algunas de estas cartas no entregan
@@ -6137,6 +6179,7 @@ def procesar_json(origen, silencioso=True):
             # No se permite que este respaldo agregue golpe de fluido
             # a una carta ya clasificada como compresión.
             and not compresion_gas
+            and not admision_no_confirmada_por_golpe_izquierdo
             and transferencia_inferior_sostenida
             and np.isfinite(extension_despegue_inferior)
             and extension_despegue_inferior >= 5.0
@@ -6144,7 +6187,7 @@ def procesar_json(origen, silencioso=True):
             and np.isfinite(vacio_sd)
             and np.isfinite(vacio_id)
             and 85.0 <= llenado <= 92.0
-            and vacio_sd >= 12.0
+            and vacio_sd >= 4.0
             and vacio_id >= 15.0
         )
 
