@@ -50,7 +50,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-05-prioridad-tendencia-admision-v28"
+    "2026-08-07-comparacion-sumergencias-v30"
 )
 
 COLORES = {
@@ -640,6 +640,17 @@ def construir_exportacion_cartas(cartas):
         "Llenado_Original_pct",
         "Llenado_Operativo_pct",
         "Sumergencia_Relativa_pct",
+        "Sumergencia_API_m",
+        "Sumergencia_Propia_m",
+        "Sumergencia_Relativa_Propia_pct",
+        "Delta_Sumergencia_Propia_vs_API_m",
+        "Calculo_Sumergencia_Propia_Valido",
+        "Motivo_Sumergencia_Propia_No_Valida",
+        "Peso_Fluido_Horizontales_lbf",
+        "Area_Piston_pulg2",
+        "Presion_Diferencial_Horizontales_psi",
+        "SG_Fluido_Asumido",
+        "Gradiente_Fluido_Asumido_psi_m",
         "Torque_Reductor_pct",
         "Carga_Estructural_pct",
         "GPM",
@@ -723,6 +734,10 @@ def construir_exportacion_pozos(cartas):
             "DiametroPistonBomba",
             "Llenado_Operativo_pct",
             "Sumergencia_Relativa_pct",
+            "Sumergencia_API_m",
+            "Sumergencia_Propia_m",
+            "Sumergencia_Relativa_Propia_pct",
+            "Delta_Sumergencia_Propia_vs_API_m",
             "Torque_Reductor_pct",
             "Carga_Estructural_pct",
             "VFM_Bruta_m3_d",
@@ -978,6 +993,128 @@ with tab_resumen:
     )
     c4.metric("Pozos con variación", variables)
 
+    st.subheader("Comparación general de sumergencia")
+    st.caption(
+        "Comparación informativa entre la sumergencia informada por la API "
+        "y la calculada con las horizontales finales. Solo incluye cartas "
+        "con ambos valores disponibles; no modifica los diagnósticos."
+    )
+
+    comparacion_sumergencia = cartas_contexto.copy()
+    api_sumergencia = pd.to_numeric(
+        comparacion_sumergencia.get("Sumergencia_API_m"),
+        errors="coerce",
+    )
+    propia_sumergencia = pd.to_numeric(
+        comparacion_sumergencia.get("Sumergencia_Propia_m"),
+        errors="coerce",
+    )
+    mascara_comparable = api_sumergencia.notna() & propia_sumergencia.notna()
+    comparables = comparacion_sumergencia.loc[mascara_comparable].copy()
+    comparables["Sumergencia_API_m"] = api_sumergencia.loc[mascara_comparable]
+    comparables["Sumergencia_Propia_m"] = propia_sumergencia.loc[mascara_comparable]
+    comparables["Delta_Propia_API_m"] = (
+        comparables["Sumergencia_Propia_m"]
+        - comparables["Sumergencia_API_m"]
+    )
+
+    cantidad_total = len(cartas_contexto)
+    cantidad_comparable = len(comparables)
+    cobertura_comparacion = (
+        100.0 * cantidad_comparable / cantidad_total
+        if cantidad_total
+        else np.nan
+    )
+
+    s1, s2, s3, s4, s5 = st.columns(5)
+    s1.metric(
+        "Cartas comparables",
+        f"{cantidad_comparable} / {cantidad_total}",
+    )
+    s2.metric(
+        "Cobertura",
+        valor_texto(cobertura_comparacion, ".1f", "%"),
+    )
+
+    if comparables.empty:
+        s3.metric("Sesgo propia−API", "—")
+        s4.metric("Error absoluto medio", "—")
+        s5.metric("Correlación", "—")
+        st.info(
+            "No hay cartas con sumergencia API y propia disponibles "
+            "simultáneamente para este filtro."
+        )
+    else:
+        sesgo_sumergencia = comparables["Delta_Propia_API_m"].mean()
+        mae_sumergencia = comparables["Delta_Propia_API_m"].abs().mean()
+        correlacion_sumergencia = comparables[
+            ["Sumergencia_API_m", "Sumergencia_Propia_m"]
+        ].corr().iloc[0, 1]
+
+        s3.metric(
+            "Sesgo propia−API",
+            valor_texto(sesgo_sumergencia, ".1f", " m"),
+        )
+        s4.metric(
+            "Error absoluto medio",
+            valor_texto(mae_sumergencia, ".1f", " m"),
+        )
+        s5.metric(
+            "Correlación",
+            valor_texto(correlacion_sumergencia, ".3f"),
+        )
+
+        limite_minimo = float(np.nanmin([
+            comparables["Sumergencia_API_m"].min(),
+            comparables["Sumergencia_Propia_m"].min(),
+        ]))
+        limite_maximo = float(np.nanmax([
+            comparables["Sumergencia_API_m"].max(),
+            comparables["Sumergencia_Propia_m"].max(),
+        ]))
+
+        fig_sumergencia = go.Figure()
+        fig_sumergencia.add_trace(go.Scatter(
+            x=comparables["Sumergencia_API_m"],
+            y=comparables["Sumergencia_Propia_m"],
+            mode="markers",
+            name="Cartas",
+            marker=dict(size=8, opacity=0.65, color="#0874d1"),
+            customdata=np.column_stack([
+                comparables["Pozo"].astype(str),
+                comparables["CartaId"].astype(str),
+                comparables["Delta_Propia_API_m"],
+            ]),
+            hovertemplate=(
+                "Pozo: %{customdata[0]}<br>"
+                "Carta: %{customdata[1]}<br>"
+                "API: %{x:.1f} m<br>"
+                "Propia: %{y:.1f} m<br>"
+                "Diferencia: %{customdata[2]:+.1f} m"
+                "<extra></extra>"
+            ),
+        ))
+        fig_sumergencia.add_trace(go.Scatter(
+            x=[limite_minimo, limite_maximo],
+            y=[limite_minimo, limite_maximo],
+            mode="lines",
+            name="Igualdad",
+            line=dict(color="#6b7280", dash="dash"),
+            hoverinfo="skip",
+        ))
+        fig_sumergencia.update_layout(
+            xaxis_title="Sumergencia API [m]",
+            yaxis_title="Sumergencia propia [m]",
+            height=470,
+            margin=dict(l=20, r=20, t=20, b=45),
+            template="plotly_white",
+        )
+        st.plotly_chart(
+            fig_sumergencia,
+            use_container_width=True,
+            key="comparacion_general_sumergencia",
+        )
+
     st.subheader("Pozos por diagnóstico robusto")
     conteo_robustos = (
         resumen_robusto_total.loc[
@@ -1114,8 +1251,12 @@ with tab_explorador:
                     st.caption(
                         "Llenado "
                         f"{valor_texto(diag.get('Llenado_Operativo_pct'), '.1f', '%')} · "
-                        "Sumergencia "
+                        "Sumergencia API "
                         f"{valor_texto(diag.get('Sumergencia_Relativa_pct'), '.1f', '%')} · "
+                        "propia "
+                        f"{valor_texto(diag.get('Sumergencia_Relativa_Propia_pct'), '.1f', '%')} · "
+                        "Δ propia−API "
+                        f"{valor_texto(diag.get('Delta_Sumergencia_Propia_vs_API_m'), '+.1f', ' m')} · "
                         "Carrera fondo "
                         f"{valor_texto(carrera_fondo_carta(cartas_por_id[carta_id]), '.1f', ' pulg')} · "
                         "VFM bruto "
@@ -1552,7 +1693,12 @@ no tenga más peso que otro. Todavía no se aplican umbrales diagnósticos.
                         f"Carrera de fondo: "
                         f"{valor_texto(carrera_fondo_carta(cartas_por_id[carta_id]), '.1f', ' pulg')}  \n"
                         f"Llenado operativo: {valor_texto(diag.get('Llenado_Operativo_pct'), '.1f', '%')} · "
-                        f"Sumergencia: {valor_texto(diag.get('Sumergencia_Relativa_pct'), '.1f', '%')}  \n"
+                        f"Sumergencia API: {valor_texto(diag.get('Sumergencia_API_m'), '.1f', ' m')} "
+                        f"({valor_texto(diag.get('Sumergencia_Relativa_pct'), '.1f', '%')}) · "
+                        f"propia: {valor_texto(diag.get('Sumergencia_Propia_m'), '.1f', ' m')} "
+                        f"({valor_texto(diag.get('Sumergencia_Relativa_Propia_pct'), '.1f', '%')})  \n"
+                        f"Diferencia propia − API: "
+                        f"{valor_texto(diag.get('Delta_Sumergencia_Propia_vs_API_m'), '+.1f', ' m')}  \n"
                         f"Torque: {valor_texto(diag.get('Torque_Reductor_pct'), '.1f', '%')} · "
                         f"Carga estructural: {valor_texto(diag.get('Carga_Estructural_pct'), '.1f', '%')}  \n"
                         f"Acción: {diag.get('Accion_Sugerida', '—')}  \n"

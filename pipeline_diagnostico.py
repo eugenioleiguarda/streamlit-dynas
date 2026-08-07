@@ -14,6 +14,92 @@ import numpy as np
 import pandas as pd
 
 
+# Hipotesis explicitas para el calculo paralelo de sumergencia.
+# Por ahora no intervienen en ninguna regla diagnostica.
+API_PETROLEO_SUMERGENCIA_PROPIA = 25.0
+FRACCION_AGUA_SUMERGENCIA_PROPIA = 0.90
+FRACCION_PETROLEO_SUMERGENCIA_PROPIA = 0.10
+METROS_A_PIES = 3.280839895013123
+
+
+def calcular_sumergencia_desde_horizontales(
+    carga_superior_lbf,
+    carga_inferior_lbf,
+    profundidad_bomba_m,
+    diametro_piston_pulg,
+    horizontales_validas,
+):
+    """Calcula sumergencia independiente usando horizontales finales."""
+    salida = {
+        "Calculo_Sumergencia_Propia_Valido": False,
+        "Motivo_Sumergencia_Propia_No_Valida": "",
+        "Peso_Fluido_Horizontales_lbf": np.nan,
+        "Area_Piston_pulg2": np.nan,
+        "Presion_Diferencial_Horizontales_psi": np.nan,
+        "SG_Fluido_Asumido": np.nan,
+        "Gradiente_Fluido_Asumido_psi_m": np.nan,
+        "Sumergencia_Propia_m": np.nan,
+        "Sumergencia_Relativa_Propia_pct": np.nan,
+    }
+
+    if not bool(horizontales_validas):
+        salida["Motivo_Sumergencia_Propia_No_Valida"] = (
+            "HORIZONTALES_NO_VALIDAS"
+        )
+        return salida
+
+    valores = np.asarray([
+        carga_superior_lbf,
+        carga_inferior_lbf,
+        profundidad_bomba_m,
+        diametro_piston_pulg,
+    ], dtype=float)
+    if not np.isfinite(valores).all():
+        salida["Motivo_Sumergencia_Propia_No_Valida"] = (
+            "DATOS_INCOMPLETOS"
+        )
+        return salida
+
+    carga_superior, carga_inferior, profundidad_m, diametro_pulg = valores
+    peso_fluido_lbf = carga_superior - carga_inferior
+    if peso_fluido_lbf <= 0 or profundidad_m <= 0 or diametro_pulg <= 0:
+        salida["Motivo_Sumergencia_Propia_No_Valida"] = (
+            "DATOS_FISICOS_NO_VALIDOS"
+        )
+        return salida
+
+    area_piston = np.pi * diametro_pulg ** 2 / 4.0
+    sg_petroleo = 141.5 / (
+        API_PETROLEO_SUMERGENCIA_PROPIA + 131.5
+    )
+    sg_fluido = (
+        FRACCION_AGUA_SUMERGENCIA_PROPIA
+        + FRACCION_PETROLEO_SUMERGENCIA_PROPIA * sg_petroleo
+    )
+    gradiente_psi_m = 0.433 * sg_fluido * METROS_A_PIES
+    presion_diferencial_psi = peso_fluido_lbf / area_piston
+    altura_columna_sobre_bomba_m = (
+        presion_diferencial_psi / gradiente_psi_m
+    )
+    sumergencia_m = profundidad_m - altura_columna_sobre_bomba_m
+
+    salida.update({
+        "Calculo_Sumergencia_Propia_Valido": True,
+        "Peso_Fluido_Horizontales_lbf": float(peso_fluido_lbf),
+        "Area_Piston_pulg2": float(area_piston),
+        "Presion_Diferencial_Horizontales_psi": float(
+            presion_diferencial_psi
+        ),
+        "SG_Fluido_Asumido": float(sg_fluido),
+        "Gradiente_Fluido_Asumido_psi_m": float(gradiente_psi_m),
+        "Sumergencia_Propia_m": float(sumergencia_m),
+        "Sumergencia_Relativa_Propia_pct": float(
+            100.0 * sumergencia_m / profundidad_m
+        ),
+    })
+    return salida
+
+
 def calcular_sumergencia_relativa(
     sumergencia_m,
     profundidad_bomba_m,
@@ -2620,11 +2706,29 @@ def procesar_json(origen, silencioso=True):
 
             carga_asc = float(linea_asc["carga_representativa"])
             carga_desc = float(linea_desc["carga_representativa"])
+            profundidad_bomba_m = pd.to_numeric(
+                carta.get("ProfundidadBomba"),
+                errors="coerce",
+            )
+            diametro_piston_pulg = pd.to_numeric(
+                carta.get("DiametroPistonBomba"),
+                errors="coerce",
+            )
+            sumergencia_propia = calcular_sumergencia_desde_horizontales(
+                carga_superior_lbf=carga_asc,
+                carga_inferior_lbf=carga_desc,
+                profundidad_bomba_m=profundidad_bomba_m,
+                diametro_piston_pulg=diametro_piston_pulg,
+                horizontales_validas=(
+                    calidad["confiables"]
+                    and integridad["valida"]
+                ),
+            )
             resultados.append({
                 "CartaId": carta_id, "Pozo": carta["Pozo"], "Fecha": carta["Fecha"],
                 "GPM": pd.to_numeric(carta.get("GPM"), errors="coerce"),
-                "Profundidad_Bomba_m": pd.to_numeric(carta.get("ProfundidadBomba"), errors="coerce"),
-                "Diametro_Piston_pulg": pd.to_numeric(carta.get("DiametroPistonBomba"), errors="coerce"),
+                "Profundidad_Bomba_m": profundidad_bomba_m,
+                "Diametro_Piston_pulg": diametro_piston_pulg,
                 "Carrera_Fondo_pulg": float(np.ptp(posicion)),
                 "Estado_Horizontales": calidad["estado"],
                 "Evidencias_Horizontales": calidad["evidencias"],
@@ -2696,6 +2800,7 @@ def procesar_json(origen, silencioso=True):
                     correccion_friccion["reduccion_gap_pct"]
                 ),
                 "Separacion_Horizontales": carga_asc - carga_desc,
+                **sumergencia_propia,
                 "Area_Real": area_poligono(posicion, carga), "Area_Ideal": area_ideal,
                 "Llenado_Calculado_pct": llenado_calculado,
                 "Llenado_API_pct": llenado_api,
@@ -6726,6 +6831,47 @@ def procesar_json(origen, silencioso=True):
                 np.nan if sin_trabajo else llenado_operativo,
             "Sumergencia_Relativa_pct":
                 sumergencia_relativa,
+            "Sumergencia_API_m":
+                resultado.get("Sumergencia_API_m", np.nan),
+            "Calculo_Sumergencia_Propia_Valido":
+                bool(
+                    resultado.get(
+                        "Calculo_Sumergencia_Propia_Valido",
+                        False,
+                    )
+                ),
+            "Motivo_Sumergencia_Propia_No_Valida":
+                resultado.get(
+                    "Motivo_Sumergencia_Propia_No_Valida",
+                    "",
+                ),
+            "Peso_Fluido_Horizontales_lbf":
+                resultado.get("Peso_Fluido_Horizontales_lbf", np.nan),
+            "Area_Piston_pulg2":
+                resultado.get("Area_Piston_pulg2", np.nan),
+            "Presion_Diferencial_Horizontales_psi":
+                resultado.get(
+                    "Presion_Diferencial_Horizontales_psi",
+                    np.nan,
+                ),
+            "SG_Fluido_Asumido":
+                resultado.get("SG_Fluido_Asumido", np.nan),
+            "Gradiente_Fluido_Asumido_psi_m":
+                resultado.get(
+                    "Gradiente_Fluido_Asumido_psi_m",
+                    np.nan,
+                ),
+            "Sumergencia_Propia_m":
+                resultado.get("Sumergencia_Propia_m", np.nan),
+            "Sumergencia_Relativa_Propia_pct":
+                resultado.get(
+                    "Sumergencia_Relativa_Propia_pct",
+                    np.nan,
+                ),
+            "Delta_Sumergencia_Propia_vs_API_m": (
+                resultado.get("Sumergencia_Propia_m", np.nan)
+                - resultado.get("Sumergencia_API_m", np.nan)
+            ),
             "Vacio_Superior_Izquierdo_pct":
                 vacio_si,
             "Vacio_Superior_Derecho_pct":
