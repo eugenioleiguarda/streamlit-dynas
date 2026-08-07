@@ -6847,6 +6847,8 @@ def procesar_json(origen, silencioso=True):
                 ),
             "Peso_Fluido_Horizontales_lbf":
                 resultado.get("Peso_Fluido_Horizontales_lbf", np.nan),
+            "Peso_Fluido_API_lbf":
+                resultado.get("Peso_Fluido_API_lbf", np.nan),
             "Area_Piston_pulg2":
                 resultado.get("Area_Piston_pulg2", np.nan),
             "Presion_Diferencial_Horizontales_psi":

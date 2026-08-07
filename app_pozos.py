@@ -50,7 +50,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-07-comparacion-sumergencias-v31"
+    "2026-08-07-comparacion-peso-fluido-v32"
 )
 
 COLORES = {
@@ -647,6 +647,7 @@ def construir_exportacion_cartas(cartas):
         "Calculo_Sumergencia_Propia_Valido",
         "Motivo_Sumergencia_Propia_No_Valida",
         "Peso_Fluido_Horizontales_lbf",
+        "Peso_Fluido_API_lbf",
         "Area_Piston_pulg2",
         "Presion_Diferencial_Horizontales_psi",
         "SG_Fluido_Asumido",
@@ -992,6 +993,141 @@ with tab_resumen:
         if not resumen_robusto.empty else 0,
     )
     c4.metric("Pozos con variación", variables)
+
+    st.subheader("Validación previa del peso de fluido")
+    st.caption(
+        "Compara directamente PesoFluido informado por la API con la "
+        "diferencia entre las horizontales finales. Esta comparación no usa "
+        "diámetro de pistón, profundidad, densidad ni presiones y, por lo "
+        "tanto, permite detectar primero diferencias de carga o unidades."
+    )
+    st.caption(
+        "Unidades interpretadas actualmente: cargas de fondo y PesoFluido "
+        "en lbf; diámetro del pistón en pulgadas; profundidad de bomba en "
+        "metros. Las dos últimas no intervienen en este gráfico."
+    )
+
+    comparacion_peso = cartas_contexto.copy()
+    peso_api = pd.to_numeric(
+        comparacion_peso.get(
+            "Peso_Fluido_API_lbf",
+            pd.Series(np.nan, index=comparacion_peso.index),
+        ),
+        errors="coerce",
+    )
+    peso_horizontales = pd.to_numeric(
+        comparacion_peso.get(
+            "Peso_Fluido_Horizontales_lbf",
+            pd.Series(np.nan, index=comparacion_peso.index),
+        ),
+        errors="coerce",
+    )
+    mascara_peso = (
+        peso_api.notna()
+        & peso_horizontales.notna()
+        & (peso_api > 0)
+        & (peso_horizontales > 0)
+    )
+    pesos_comparables = comparacion_peso.loc[mascara_peso].copy()
+    pesos_comparables["Peso_API_lbf"] = peso_api.loc[mascara_peso]
+    pesos_comparables["Peso_Horizontales_lbf"] = (
+        peso_horizontales.loc[mascara_peso]
+    )
+    pesos_comparables["Delta_Peso_lbf"] = (
+        pesos_comparables["Peso_Horizontales_lbf"]
+        - pesos_comparables["Peso_API_lbf"]
+    )
+    pesos_comparables["Ratio_Horizontales_API"] = (
+        pesos_comparables["Peso_Horizontales_lbf"]
+        / pesos_comparables["Peso_API_lbf"]
+    )
+
+    total_peso = len(comparacion_peso)
+    n_peso = len(pesos_comparables)
+    cobertura_peso = 100.0 * n_peso / total_peso if total_peso else np.nan
+    p1, p2, p3, p4, p5, p6 = st.columns(6)
+    p1.caption("Cartas comparables")
+    p1.markdown(f"### {n_peso} / {total_peso}")
+    p2.caption("Cobertura")
+    p2.markdown(f"### {valor_texto(cobertura_peso, '.1f', '%')}")
+
+    if pesos_comparables.empty:
+        for columna, titulo in zip(
+            (p3, p4, p5, p6),
+            ("Sesgo horiz.−API", "Error absoluto medio", "Ratio mediano", "Correlación"),
+        ):
+            columna.caption(titulo)
+            columna.markdown("### —")
+        st.info(
+            "No hay cartas con ambos pesos positivos disponibles para el filtro."
+        )
+    else:
+        sesgo_peso = pesos_comparables["Delta_Peso_lbf"].mean()
+        mae_peso = pesos_comparables["Delta_Peso_lbf"].abs().mean()
+        ratio_mediano = pesos_comparables["Ratio_Horizontales_API"].median()
+        correlacion_peso = pesos_comparables[
+            ["Peso_API_lbf", "Peso_Horizontales_lbf"]
+        ].corr().iloc[0, 1]
+
+        p3.caption("Sesgo horiz.−API")
+        p3.markdown(f"### {valor_texto(sesgo_peso, '.0f', ' lbf')}")
+        p4.caption("Error absoluto medio")
+        p4.markdown(f"### {valor_texto(mae_peso, '.0f', ' lbf')}")
+        p5.caption("Ratio mediano")
+        p5.markdown(f"### {valor_texto(ratio_mediano, '.3f')}")
+        p6.caption("Correlación")
+        p6.markdown(f"### {valor_texto(correlacion_peso, '.3f')}")
+
+        minimo_peso = float(np.nanmin([
+            pesos_comparables["Peso_API_lbf"].min(),
+            pesos_comparables["Peso_Horizontales_lbf"].min(),
+        ]))
+        maximo_peso = float(np.nanmax([
+            pesos_comparables["Peso_API_lbf"].max(),
+            pesos_comparables["Peso_Horizontales_lbf"].max(),
+        ]))
+        fig_peso = go.Figure()
+        fig_peso.add_trace(go.Scatter(
+            x=pesos_comparables["Peso_API_lbf"],
+            y=pesos_comparables["Peso_Horizontales_lbf"],
+            mode="markers",
+            name="Cartas",
+            marker=dict(size=8, opacity=0.65, color="#0f9d58"),
+            customdata=np.column_stack([
+                pesos_comparables["Pozo"].astype(str),
+                pesos_comparables["CartaId"].astype(str),
+                pesos_comparables["Delta_Peso_lbf"],
+                pesos_comparables["Ratio_Horizontales_API"],
+            ]),
+            hovertemplate=(
+                "Pozo: %{customdata[0]}<br>"
+                "Carta: %{customdata[1]}<br>"
+                "API: %{x:.0f} lbf<br>"
+                "Horizontales: %{y:.0f} lbf<br>"
+                "Diferencia: %{customdata[2]:+.0f} lbf<br>"
+                "Ratio: %{customdata[3]:.3f}<extra></extra>"
+            ),
+        ))
+        fig_peso.add_trace(go.Scatter(
+            x=[minimo_peso, maximo_peso],
+            y=[minimo_peso, maximo_peso],
+            mode="lines",
+            name="Igualdad",
+            line=dict(color="#6b7280", dash="dash"),
+            hoverinfo="skip",
+        ))
+        fig_peso.update_layout(
+            xaxis_title="Peso de fluido API [lbf]",
+            yaxis_title="Diferencia de horizontales [lbf]",
+            height=470,
+            margin=dict(l=20, r=20, t=20, b=45),
+            template="plotly_white",
+        )
+        st.plotly_chart(
+            fig_peso,
+            use_container_width=True,
+            key="comparacion_general_peso_fluido",
+        )
 
     st.subheader("Comparación general de sumergencia")
     st.caption(
@@ -1704,6 +1840,10 @@ no tenga más peso que otro. Todavía no se aplican umbrales diagnósticos.
                         f"({valor_texto(diag.get('Sumergencia_Relativa_pct'), '.1f', '%')}) · "
                         f"propia: {valor_texto(diag.get('Sumergencia_Propia_m'), '.1f', ' m')} "
                         f"({valor_texto(diag.get('Sumergencia_Relativa_Propia_pct'), '.1f', '%')})  \n"
+                        f"Peso fluido API: "
+                        f"{valor_texto(diag.get('Peso_Fluido_API_lbf'), '.0f', ' lbf')} · "
+                        f"horizontales: "
+                        f"{valor_texto(diag.get('Peso_Fluido_Horizontales_lbf'), '.0f', ' lbf')}  \n"
                         f"Diferencia propia − API: "
                         f"{valor_texto(diag.get('Delta_Sumergencia_Propia_vs_API_m'), '+.1f', ' m')}  \n"
                         f"Torque: {valor_texto(diag.get('Torque_Reductor_pct'), '.1f', '%')} · "
