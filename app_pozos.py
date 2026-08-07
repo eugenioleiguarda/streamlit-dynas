@@ -50,7 +50,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-07-comparacion-sumergencias-v30"
+    "2026-08-07-comparacion-sumergencias-v31"
 )
 
 COLORES = {
@@ -999,6 +999,12 @@ with tab_resumen:
         "y la calculada con las horizontales finales. Solo incluye cartas "
         "con ambos valores disponibles; no modifica los diagnósticos."
     )
+    st.caption(
+        "Hipótesis del cálculo propio: presión diferencial en boca = 0 psi; "
+        "fluido = 90% agua + 10% petróleo API 25; densidad relativa "
+        "aproximada = 0,9904. Los resultados negativos se conservan como "
+        "señal de inconsistencia y no como una condición física válida."
+    )
 
     comparacion_sumergencia = cartas_contexto.copy()
     api_sumergencia = pd.to_numeric(
@@ -1027,19 +1033,20 @@ with tab_resumen:
     )
 
     s1, s2, s3, s4, s5 = st.columns(5)
-    s1.metric(
-        "Cartas comparables",
-        f"{cantidad_comparable} / {cantidad_total}",
-    )
-    s2.metric(
-        "Cobertura",
-        valor_texto(cobertura_comparacion, ".1f", "%"),
+    s1.caption("Cartas comparables")
+    s1.markdown(f"### {cantidad_comparable} / {cantidad_total}")
+    s2.caption("Cobertura")
+    s2.markdown(
+        f"### {valor_texto(cobertura_comparacion, '.1f', '%')}"
     )
 
     if comparables.empty:
-        s3.metric("Sesgo propia−API", "—")
-        s4.metric("Error absoluto medio", "—")
-        s5.metric("Correlación", "—")
+        s3.caption("Sesgo propia−API")
+        s3.markdown("### —")
+        s4.caption("Error absoluto medio")
+        s4.markdown("### —")
+        s5.caption("Correlación")
+        s5.markdown("### —")
         st.info(
             "No hay cartas con sumergencia API y propia disponibles "
             "simultáneamente para este filtro."
@@ -1051,17 +1058,17 @@ with tab_resumen:
             ["Sumergencia_API_m", "Sumergencia_Propia_m"]
         ].corr().iloc[0, 1]
 
-        s3.metric(
-            "Sesgo propia−API",
-            valor_texto(sesgo_sumergencia, ".1f", " m"),
+        s3.caption("Sesgo propia−API")
+        s3.markdown(
+            f"### {valor_texto(sesgo_sumergencia, '.1f', ' m')}"
         )
-        s4.metric(
-            "Error absoluto medio",
-            valor_texto(mae_sumergencia, ".1f", " m"),
+        s4.caption("Error absoluto medio")
+        s4.markdown(
+            f"### {valor_texto(mae_sumergencia, '.1f', ' m')}"
         )
-        s5.metric(
-            "Correlación",
-            valor_texto(correlacion_sumergencia, ".3f"),
+        s5.caption("Correlación")
+        s5.markdown(
+            f"### {valor_texto(correlacion_sumergencia, '.3f')}"
         )
 
         limite_minimo = float(np.nanmin([
