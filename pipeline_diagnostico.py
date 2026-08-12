@@ -100,6 +100,175 @@ def calcular_sumergencia_desde_horizontales(
     return salida
 
 
+def estimar_horizontales_experimentales_peso(
+    ascendente,
+    descendente,
+    horizontales_validas,
+):
+    """Estima niveles manuales equivalentes para peso de fluido.
+
+    Es un calculo independiente de la carta ideal y de los diagnosticos. La
+    logica imita la seleccion visual del especialista: descarta las
+    transferencias laterales, busca el intervalo interior donde ambas ramas
+    permanecen separadas y persistentes, y coloca cada nivel sobre el hombro
+    interno de su rama. Los niveles no tienen que atravesar puntos reales ni
+    se fuerzan a ser simetricos.
+    """
+    salida = {
+        "Calculo_Peso_Experimental_Valido": False,
+        "Motivo_Peso_Experimental_No_Valido": "",
+        "Carga_Superior_Peso_Experimental_lbf": np.nan,
+        "Carga_Inferior_Peso_Experimental_lbf": np.nan,
+        "Peso_Fluido_Experimental_lbf": np.nan,
+        "Metodo_Peso_Experimental": "NO_ESTIMABLE",
+        "Transferencia_Derecha_Peso_Detectada": False,
+    }
+    if not bool(horizontales_validas):
+        salida["Motivo_Peso_Experimental_No_Valido"] = (
+            "HORIZONTALES_BASE_NO_VALIDAS"
+        )
+        return salida
+
+    try:
+        x_asc = np.asarray(ascendente["posicion"], dtype=float)
+        y_asc = np.asarray(ascendente["carga"], dtype=float)
+        x_desc = np.asarray(descendente["posicion"], dtype=float)
+        y_desc = np.asarray(descendente["carga"], dtype=float)
+        validos_asc = np.isfinite(x_asc) & np.isfinite(y_asc)
+        validos_desc = np.isfinite(x_desc) & np.isfinite(y_desc)
+        x_asc, y_asc = x_asc[validos_asc], y_asc[validos_asc]
+        x_desc, y_desc = x_desc[validos_desc], y_desc[validos_desc]
+        if min(len(x_asc), len(x_desc)) < 5:
+            raise ValueError("RAMAS_INSUFICIENTES")
+
+        x_min = float(min(np.min(x_asc), np.min(x_desc)))
+        x_max = float(max(np.max(x_asc), np.max(x_desc)))
+        rango_x = x_max - x_min
+        if rango_x <= 1e-9:
+            raise ValueError("RECORRIDO_NULO")
+
+        def interpolar(rama_x, rama_y, grilla_u):
+            tabla = pd.DataFrame({"x": rama_x, "y": rama_y})
+            tabla = (
+                tabla.groupby("x", as_index=False)["y"]
+                .median()
+                .sort_values("x")
+            )
+            if len(tabla) < 4:
+                raise ValueError("RAMA_NO_INTERPOLABLE")
+            valores = np.interp(
+                x_min + rango_x * grilla_u,
+                tabla["x"].to_numpy(dtype=float),
+                tabla["y"].to_numpy(dtype=float),
+            )
+            return (
+                pd.Series(valores)
+                .rolling(5, center=True, min_periods=1)
+                .median()
+                .to_numpy(dtype=float)
+            )
+
+        grilla = np.linspace(0.04, 0.96, 161)
+        superior = interpolar(x_asc, y_asc, grilla)
+        inferior = interpolar(x_desc, y_desc, grilla)
+        separacion = superior - inferior
+        zona_central = (grilla >= 0.15) & (grilla <= 0.85)
+        separacion_central = separacion[
+            zona_central & np.isfinite(separacion) & (separacion > 0)
+        ]
+        if len(separacion_central) < 20:
+            raise ValueError("SEPARACION_INTERIOR_INSUFICIENTE")
+
+        # Una transferencia lateral se reconoce porque la apertura entre
+        # ramas aun no alcanzo (o ya perdio) una fraccion importante de la
+        # apertura interior. Se conserva el tramo continuo mas largo; asi el
+        # limite derecho se adelanta automaticamente en cartas con gas o
+        # golpe de fluido.
+        separacion_referencia = float(
+            np.nanquantile(separacion_central, 0.70)
+        )
+        abierta = (
+            np.isfinite(separacion)
+            & (separacion >= 0.62 * separacion_referencia)
+            & (grilla >= 0.06)
+            & (grilla <= 0.94)
+        )
+
+        indices = np.flatnonzero(abierta)
+        if len(indices) == 0:
+            raise ValueError("SIN_MESETA_PERSISTENTE")
+        cortes = np.flatnonzero(np.diff(indices) > 1) + 1
+        grupos = np.split(indices, cortes)
+        grupos = [g for g in grupos if len(g) >= 18]
+        if not grupos:
+            raise ValueError("MESETA_DEMASIADO_CORTA")
+        grupo = max(
+            grupos,
+            key=lambda g: (
+                float(grilla[g[-1]] - grilla[g[0]]),
+                -abs(float(np.mean(grilla[g])) - 0.50),
+            ),
+        )
+        inicio = int(grupo[0])
+        fin = int(grupo[-1])
+        if grilla[fin] - grilla[inicio] < 0.28:
+            raise ValueError("MESETA_SIN_EXTENSION_MINIMA")
+
+        # Se retira un pequeno margen para que los puntos donde comienza la
+        # transferencia no contaminen los niveles. Luego se resumen bloques
+        # de igual ancho: una nube densa en un extremo no pesa mas que el
+        # resto de la meseta.
+        margen = max(2, int(round(0.03 * len(grilla))))
+        inicio_neto = min(inicio + margen, fin)
+        fin_neto = max(fin - margen, inicio_neto)
+        if fin_neto - inicio_neto + 1 < 14:
+            raise ValueError("MESETA_NETA_INSUFICIENTE")
+
+        idx_neto = np.arange(inicio_neto, fin_neto + 1)
+        bloques = [b for b in np.array_split(idx_neto, 12) if len(b)]
+        medianas_superiores = np.asarray([
+            np.nanmedian(superior[b]) for b in bloques
+        ])
+        medianas_inferiores = np.asarray([
+            np.nanmedian(inferior[b]) for b in bloques
+        ])
+
+        # Criterio manual equivalente: borde inferior de la rama cargada y
+        # borde superior de la rama descargada. Son niveles sinteticos e
+        # independientes; deliberadamente no se recentran ni se simetrizan.
+        nivel_superior = float(
+            np.nanquantile(medianas_superiores, 0.10)
+        )
+        nivel_inferior = float(
+            np.nanquantile(medianas_inferiores, 0.90)
+        )
+        peso = nivel_superior - nivel_inferior
+        if not np.isfinite(peso) or peso <= 0:
+            raise ValueError("PESO_MANUAL_EQUIVALENTE_NO_POSITIVO")
+
+        transferencia_derecha = bool(grilla[fin] < 0.86)
+        metodo = (
+            "HOMBROS_INDEPENDIENTES_ADAPTATIVOS_"
+            + (
+                "CON_TRANSFERENCIA_DERECHA"
+                if transferencia_derecha
+                else "SIN_TRANSFERENCIA_DERECHA"
+            )
+        )
+
+        salida.update({
+            "Calculo_Peso_Experimental_Valido": True,
+            "Carga_Superior_Peso_Experimental_lbf": nivel_superior,
+            "Carga_Inferior_Peso_Experimental_lbf": nivel_inferior,
+            "Peso_Fluido_Experimental_lbf": float(peso),
+            "Metodo_Peso_Experimental": metodo,
+            "Transferencia_Derecha_Peso_Detectada": transferencia_derecha,
+        })
+    except Exception as error:
+        salida["Motivo_Peso_Experimental_No_Valido"] = str(error)
+    return salida
+
+
 def calcular_sumergencia_relativa(
     sumergencia_m,
     profundidad_bomba_m,
@@ -2724,6 +2893,70 @@ def procesar_json(origen, silencioso=True):
                     and integridad["valida"]
                 ),
             )
+
+            # Estimacion paralela y experimental para peso de fluido.
+            # No modifica la carta ideal, el llenado ni los diagnosticos.
+            horizontales_peso_experimental = (
+                estimar_horizontales_experimentales_peso(
+                    ascendente=asc,
+                    descendente=desc,
+                    horizontales_validas=(
+                        calidad["confiables"]
+                        and integridad["valida"]
+                    ),
+                )
+            )
+            sumergencia_experimental_base = (
+                calcular_sumergencia_desde_horizontales(
+                    carga_superior_lbf=(
+                        horizontales_peso_experimental[
+                            "Carga_Superior_Peso_Experimental_lbf"
+                        ]
+                    ),
+                    carga_inferior_lbf=(
+                        horizontales_peso_experimental[
+                            "Carga_Inferior_Peso_Experimental_lbf"
+                        ]
+                    ),
+                    profundidad_bomba_m=profundidad_bomba_m,
+                    diametro_piston_pulg=diametro_piston_pulg,
+                    horizontales_validas=(
+                        horizontales_peso_experimental[
+                            "Calculo_Peso_Experimental_Valido"
+                        ]
+                    ),
+                )
+            )
+            sumergencia_peso_experimental = {
+                "Calculo_Sumergencia_Peso_Experimental_Valido": (
+                    sumergencia_experimental_base[
+                        "Calculo_Sumergencia_Propia_Valido"
+                    ]
+                ),
+                "Motivo_Sumergencia_Peso_Experimental_No_Valida": (
+                    sumergencia_experimental_base[
+                        "Motivo_Sumergencia_Propia_No_Valida"
+                    ]
+                ),
+                "Area_Piston_Peso_Experimental_pulg2": (
+                    sumergencia_experimental_base["Area_Piston_pulg2"]
+                ),
+                "Presion_Diferencial_Peso_Experimental_psi": (
+                    sumergencia_experimental_base[
+                        "Presion_Diferencial_Horizontales_psi"
+                    ]
+                ),
+                "Sumergencia_Peso_Experimental_m": (
+                    sumergencia_experimental_base[
+                        "Sumergencia_Propia_m"
+                    ]
+                ),
+                "Sumergencia_Relativa_Peso_Experimental_pct": (
+                    sumergencia_experimental_base[
+                        "Sumergencia_Relativa_Propia_pct"
+                    ]
+                ),
+            }
             resultados.append({
                 "CartaId": carta_id, "Pozo": carta["Pozo"], "Fecha": carta["Fecha"],
                 "GPM": pd.to_numeric(carta.get("GPM"), errors="coerce"),
@@ -2801,6 +3034,8 @@ def procesar_json(origen, silencioso=True):
                 ),
                 "Separacion_Horizontales": carga_asc - carga_desc,
                 **sumergencia_propia,
+                **horizontales_peso_experimental,
+                **sumergencia_peso_experimental,
                 "Area_Real": area_poligono(posicion, carga), "Area_Ideal": area_ideal,
                 "Llenado_Calculado_pct": llenado_calculado,
                 "Llenado_API_pct": llenado_api,
@@ -6872,6 +7107,74 @@ def procesar_json(origen, silencioso=True):
                 ),
             "Delta_Sumergencia_Propia_vs_API_m": (
                 resultado.get("Sumergencia_Propia_m", np.nan)
+                - resultado.get("Sumergencia_API_m", np.nan)
+            ),
+            "Calculo_Peso_Experimental_Valido":
+                bool(
+                    resultado.get(
+                        "Calculo_Peso_Experimental_Valido",
+                        False,
+                    )
+                ),
+            "Motivo_Peso_Experimental_No_Valido":
+                resultado.get(
+                    "Motivo_Peso_Experimental_No_Valido",
+                    "",
+                ),
+            "Carga_Superior_Peso_Experimental_lbf":
+                resultado.get(
+                    "Carga_Superior_Peso_Experimental_lbf",
+                    np.nan,
+                ),
+            "Carga_Inferior_Peso_Experimental_lbf":
+                resultado.get(
+                    "Carga_Inferior_Peso_Experimental_lbf",
+                    np.nan,
+                ),
+            "Peso_Fluido_Experimental_lbf":
+                resultado.get(
+                    "Peso_Fluido_Experimental_lbf",
+                    np.nan,
+                ),
+            "Metodo_Peso_Experimental":
+                resultado.get(
+                    "Metodo_Peso_Experimental",
+                    "NO_ESTIMABLE",
+                ),
+            "Transferencia_Derecha_Peso_Detectada":
+                bool(
+                    resultado.get(
+                        "Transferencia_Derecha_Peso_Detectada",
+                        False,
+                    )
+                ),
+            "Calculo_Sumergencia_Peso_Experimental_Valido":
+                bool(
+                    resultado.get(
+                        "Calculo_Sumergencia_Peso_Experimental_Valido",
+                        False,
+                    )
+                ),
+            "Motivo_Sumergencia_Peso_Experimental_No_Valida":
+                resultado.get(
+                    "Motivo_Sumergencia_Peso_Experimental_No_Valida",
+                    "",
+                ),
+            "Sumergencia_Peso_Experimental_m":
+                resultado.get(
+                    "Sumergencia_Peso_Experimental_m",
+                    np.nan,
+                ),
+            "Sumergencia_Relativa_Peso_Experimental_pct":
+                resultado.get(
+                    "Sumergencia_Relativa_Peso_Experimental_pct",
+                    np.nan,
+                ),
+            "Delta_Sumergencia_Peso_Experimental_vs_API_m": (
+                resultado.get(
+                    "Sumergencia_Peso_Experimental_m",
+                    np.nan,
+                )
                 - resultado.get("Sumergencia_API_m", np.nan)
             ),
             "Vacio_Superior_Izquierdo_pct":

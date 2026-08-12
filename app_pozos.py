@@ -50,7 +50,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-07-comparacion-peso-fluido-v32"
+    "2026-08-12-peso-manual-equivalente-v33"
 )
 
 COLORES = {
@@ -1258,6 +1258,137 @@ with tab_resumen:
             key="comparacion_general_sumergencia",
         )
 
+    st.subheader("Método experimental oculto: comparación directa")
+    st.caption(
+        "Estima niveles sintéticos interiores y descuenta simétricamente "
+        "el ensanchamiento atribuible a redondeo, fricción o dinámica. Si "
+        "hay transferencia a la derecha, usa la zona izquierda/central. "
+        "Los niveles no tienen que atravesar puntos reales, no se dibujan "
+        "y no afectan los diagnósticos."
+    )
+
+    def preparar_comparacion(df, api_col, metodo_col):
+        api = pd.to_numeric(
+            df.get(api_col, pd.Series(np.nan, index=df.index)),
+            errors="coerce",
+        )
+        metodo = pd.to_numeric(
+            df.get(metodo_col, pd.Series(np.nan, index=df.index)),
+            errors="coerce",
+        )
+        mascara = api.notna() & metodo.notna()
+        if "Peso_Fluido" in api_col:
+            mascara &= (api > 0) & (metodo > 0)
+        base = df.loc[mascara].copy()
+        base["API"] = api.loc[mascara]
+        base["Metodo"] = metodo.loc[mascara]
+        base["Delta"] = base["Metodo"] - base["API"]
+        return base
+
+    def fila_resumen(base, total, etiqueta, unidad):
+        correlacion = (
+            base[["API", "Metodo"]].corr().iloc[0, 1]
+            if len(base) >= 2 else np.nan
+        )
+        return {
+            "Método": etiqueta,
+            "Cartas": len(base),
+            "Cobertura [%]": 100.0 * len(base) / total if total else np.nan,
+            f"Sesgo [{unidad}]": base["Delta"].mean(),
+            f"MAE [{unidad}]": base["Delta"].abs().mean(),
+            "Correlación": correlacion,
+        }
+
+    def grafico_comparacion(base, titulo, x_titulo, y_titulo, color):
+        figura = go.Figure()
+        if base.empty:
+            return figura
+        minimo = float(np.nanmin([base["API"].min(), base["Metodo"].min()]))
+        maximo = float(np.nanmax([base["API"].max(), base["Metodo"].max()]))
+        figura.add_trace(go.Scatter(
+            x=base["API"], y=base["Metodo"], mode="markers",
+            name="Cartas", marker=dict(size=7, opacity=0.60, color=color),
+            customdata=np.column_stack([
+                base["Pozo"].astype(str), base["CartaId"].astype(str),
+                base["Delta"],
+            ]),
+            hovertemplate=(
+                "Pozo: %{customdata[0]}<br>Carta: %{customdata[1]}<br>"
+                "API: %{x:.1f}<br>Método: %{y:.1f}<br>"
+                "Diferencia: %{customdata[2]:+.1f}<extra></extra>"
+            ),
+        ))
+        figura.add_trace(go.Scatter(
+            x=[minimo, maximo], y=[minimo, maximo], mode="lines",
+            name="Igualdad", line=dict(color="#9ca3af", dash="dash"),
+            hoverinfo="skip",
+        ))
+        figura.update_layout(
+            title=titulo, xaxis_title=x_titulo, yaxis_title=y_titulo,
+            height=390, margin=dict(l=10, r=10, t=45, b=40),
+            template="plotly_white",
+        )
+        return figura
+
+    total_cmp = len(cartas_contexto)
+    peso_actual_cmp = preparar_comparacion(
+        cartas_contexto, "Peso_Fluido_API_lbf", "Peso_Fluido_Horizontales_lbf"
+    )
+    peso_exp_cmp = preparar_comparacion(
+        cartas_contexto, "Peso_Fluido_API_lbf", "Peso_Fluido_Experimental_lbf"
+    )
+    st.markdown("#### Peso de fluido")
+    st.dataframe(pd.DataFrame([
+        fila_resumen(peso_actual_cmp, total_cmp, "Actual", "lbf"),
+        fila_resumen(peso_exp_cmp, total_cmp, "Experimental", "lbf"),
+    ]).round(3), hide_index=True, use_container_width=True)
+    col_actual, col_exp = st.columns(2)
+    with col_actual:
+        st.plotly_chart(
+            grafico_comparacion(
+                peso_actual_cmp, "Horizontales actuales",
+                "Peso API [lbf]", "Peso estimado [lbf]", "#6b7280",
+            ),
+            use_container_width=True, key="peso_actual_vs_api",
+        )
+    with col_exp:
+        st.plotly_chart(
+            grafico_comparacion(
+                peso_exp_cmp, "Criterio manual equivalente (experimental)",
+                "Peso API [lbf]", "Peso estimado [lbf]", "#8b5cf6",
+            ),
+            use_container_width=True, key="peso_experimental_vs_api",
+        )
+
+    sum_actual_cmp = preparar_comparacion(
+        cartas_contexto, "Sumergencia_API_m", "Sumergencia_Propia_m"
+    )
+    sum_exp_cmp = preparar_comparacion(
+        cartas_contexto, "Sumergencia_API_m", "Sumergencia_Peso_Experimental_m"
+    )
+    st.markdown("#### Sumergencia calculada")
+    st.dataframe(pd.DataFrame([
+        fila_resumen(sum_actual_cmp, total_cmp, "Actual", "m"),
+        fila_resumen(sum_exp_cmp, total_cmp, "Experimental", "m"),
+    ]).round(3), hide_index=True, use_container_width=True)
+    col_actual, col_exp = st.columns(2)
+    with col_actual:
+        st.plotly_chart(
+            grafico_comparacion(
+                sum_actual_cmp, "Horizontales actuales",
+                "Sumergencia API [m]", "Sumergencia calculada [m]", "#0874d1",
+            ),
+            use_container_width=True, key="sum_actual_vs_api",
+        )
+    with col_exp:
+        st.plotly_chart(
+            grafico_comparacion(
+                sum_exp_cmp, "Criterio manual equivalente (experimental)",
+                "Sumergencia API [m]", "Sumergencia calculada [m]", "#8b5cf6",
+            ),
+            use_container_width=True, key="sum_experimental_vs_api",
+        )
+
     st.subheader("Pozos por diagnóstico robusto")
     conteo_robustos = (
         resumen_robusto_total.loc[
@@ -1840,10 +1971,15 @@ no tenga más peso que otro. Todavía no se aplican umbrales diagnósticos.
                         f"({valor_texto(diag.get('Sumergencia_Relativa_pct'), '.1f', '%')}) · "
                         f"propia: {valor_texto(diag.get('Sumergencia_Propia_m'), '.1f', ' m')} "
                         f"({valor_texto(diag.get('Sumergencia_Relativa_Propia_pct'), '.1f', '%')})  \n"
+                        f"experimental: "
+                        f"{valor_texto(diag.get('Sumergencia_Peso_Experimental_m'), '.1f', ' m')} "
+                        f"({valor_texto(diag.get('Sumergencia_Relativa_Peso_Experimental_pct'), '.1f', '%')})  \n"
                         f"Peso fluido API: "
                         f"{valor_texto(diag.get('Peso_Fluido_API_lbf'), '.0f', ' lbf')} · "
                         f"horizontales: "
-                        f"{valor_texto(diag.get('Peso_Fluido_Horizontales_lbf'), '.0f', ' lbf')}  \n"
+                        f"{valor_texto(diag.get('Peso_Fluido_Horizontales_lbf'), '.0f', ' lbf')} · "
+                        f"experimental: "
+                        f"{valor_texto(diag.get('Peso_Fluido_Experimental_lbf'), '.0f', ' lbf')}  \n"
                         f"Diferencia propia − API: "
                         f"{valor_texto(diag.get('Delta_Sumergencia_Propia_vs_API_m'), '+.1f', ' m')}  \n"
                         f"Torque: {valor_texto(diag.get('Torque_Reductor_pct'), '.1f', '%')} · "
