@@ -46,7 +46,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-12-peso-manual-equivalente-v34-import"
+    "2026-08-12-peso-manual-equivalente-v39-sg09904-desplazamiento"
 )
 
 COLORES = {
@@ -990,10 +990,12 @@ with tab_resumen:
     )
     c4.metric("Pozos con variación", variables)
 
-    st.subheader("Validación previa del peso de fluido")
+    st.subheader("Comparación de peso de fluido — criterio manual equivalente")
     st.caption(
         "Compara directamente PesoFluido informado por la API con la "
-        "diferencia entre las horizontales finales. Esta comparación no usa "
+        "separación de las horizontales ocultas del método manual equivalente. "
+        "El método fue calibrado con la carta ECh-277 del 12/08/2026 15:55 "
+        "para reproducir 5764 lbf. Esta comparación no usa "
         "diámetro de pistón, profundidad, densidad ni presiones y, por lo "
         "tanto, permite detectar primero diferencias de carga o unidades."
     )
@@ -1013,7 +1015,7 @@ with tab_resumen:
     )
     peso_horizontales = pd.to_numeric(
         comparacion_peso.get(
-            "Peso_Fluido_Horizontales_lbf",
+            "Peso_Fluido_Experimental_lbf",
             pd.Series(np.nan, index=comparacion_peso.index),
         ),
         errors="coerce",
@@ -1065,7 +1067,7 @@ with tab_resumen:
             ["Peso_API_lbf", "Peso_Horizontales_lbf"]
         ].corr().iloc[0, 1]
 
-        p3.caption("Sesgo horiz.−API")
+        p3.caption("Sesgo método−API")
         p3.markdown(f"### {valor_texto(sesgo_peso, '.0f', ' lbf')}")
         p4.caption("Error absoluto medio")
         p4.markdown(f"### {valor_texto(mae_peso, '.0f', ' lbf')}")
@@ -1114,7 +1116,7 @@ with tab_resumen:
         ))
         fig_peso.update_layout(
             xaxis_title="Peso de fluido API [lbf]",
-            yaxis_title="Diferencia de horizontales [lbf]",
+            yaxis_title="Peso por criterio manual equivalente [lbf]",
             height=470,
             margin=dict(l=20, r=20, t=20, b=45),
             template="plotly_white",
@@ -1128,14 +1130,16 @@ with tab_resumen:
     st.subheader("Comparación general de sumergencia")
     st.caption(
         "Comparación informativa entre la sumergencia informada por la API "
-        "y la calculada con las horizontales finales. Solo incluye cartas "
+        "y la calculada con las horizontales ocultas del criterio manual "
+        "equivalente calibrado. Solo incluye cartas "
         "con ambos valores disponibles; no modifica los diagnósticos."
     )
     st.caption(
-        "Hipótesis del cálculo propio: presión diferencial en boca = 0 psi; "
-        "fluido = 90% agua + 10% petróleo API 25; densidad relativa "
-        "aproximada = 0,9904. Los resultados negativos se conservan como "
-        "señal de inconsistencia y no como una condición física válida."
+        "Cálculo propio con las horizontales ocultas calibradas en ECh-277 "
+        "(12/08/2026 15:55), gravedad específica fija 0,9904 y presiones "
+        "de tubing/casing iguales. Con 5764 lbf y profundidad 1789 m, la "
+        "sumergencia resulta aproximadamente 87,8 m; con los 1791 m del "
+        "JSON resulta aproximadamente 89,8 m. No se fuerza el valor API."
     )
 
     comparacion_sumergencia = cartas_contexto.copy()
@@ -1144,7 +1148,7 @@ with tab_resumen:
         errors="coerce",
     )
     propia_sumergencia = pd.to_numeric(
-        comparacion_sumergencia.get("Sumergencia_Propia_m"),
+        comparacion_sumergencia.get("Sumergencia_Peso_Experimental_m"),
         errors="coerce",
     )
     mascara_comparable = api_sumergencia.notna() & propia_sumergencia.notna()
@@ -1254,136 +1258,49 @@ with tab_resumen:
             key="comparacion_general_sumergencia",
         )
 
-    st.subheader("Método experimental oculto: comparación directa")
+    st.subheader("Validación del desplazamiento de bomba")
     st.caption(
-        "Estima niveles sintéticos interiores y descuenta simétricamente "
-        "el ensanchamiento atribuible a redondeo, fricción o dinámica. Si "
-        "hay transferencia a la derecha, usa la zona izquierda/central. "
-        "Los niveles no tienen que atravesar puntos reales, no se dibujan "
-        "y no afectan los diagnósticos."
+        "La carrera efectiva propia se estima como la distancia entre los "
+        "dos cruces de la carta real con la horizontal superior oculta. El "
+        "desplazamiento efectivo propio se calcula exclusivamente con esa "
+        "carrera geométrica, el diámetro del pistón y los GPM. La carrera "
+        "efectiva y el desplazamiento informados por la API se usan solamente "
+        "como referencia de comparación."
     )
-
-    def preparar_comparacion(df, api_col, metodo_col):
-        api = pd.to_numeric(
-            df.get(api_col, pd.Series(np.nan, index=df.index)),
-            errors="coerce",
+    columnas_desplazamiento = [
+        (
+            "Desplazamiento efectivo",
+            "Desplazamiento_Bruto_Efectivo_API_m3_d",
+            "Desplazamiento_Bruto_Efectivo_Calculado_m3_d",
+        ),
+    ]
+    resumen_desplazamiento = []
+    for nombre, campo_api, campo_calculado in columnas_desplazamiento:
+        valor_api = pd.to_numeric(cartas_contexto.get(campo_api), errors="coerce")
+        valor_calculado = pd.to_numeric(
+            cartas_contexto.get(campo_calculado), errors="coerce"
         )
-        metodo = pd.to_numeric(
-            df.get(metodo_col, pd.Series(np.nan, index=df.index)),
-            errors="coerce",
-        )
-        mascara = api.notna() & metodo.notna()
-        if "Peso_Fluido" in api_col:
-            mascara &= (api > 0) & (metodo > 0)
-        base = df.loc[mascara].copy()
-        base["API"] = api.loc[mascara]
-        base["Metodo"] = metodo.loc[mascara]
-        base["Delta"] = base["Metodo"] - base["API"]
-        return base
-
-    def fila_resumen(base, total, etiqueta, unidad):
-        correlacion = (
-            base[["API", "Metodo"]].corr().iloc[0, 1]
-            if len(base) >= 2 else np.nan
-        )
-        return {
-            "Método": etiqueta,
-            "Cartas": len(base),
-            "Cobertura [%]": 100.0 * len(base) / total if total else np.nan,
-            f"Sesgo [{unidad}]": base["Delta"].mean(),
-            f"MAE [{unidad}]": base["Delta"].abs().mean(),
-            "Correlación": correlacion,
-        }
-
-    def grafico_comparacion(base, titulo, x_titulo, y_titulo, color):
-        figura = go.Figure()
-        if base.empty:
-            return figura
-        minimo = float(np.nanmin([base["API"].min(), base["Metodo"].min()]))
-        maximo = float(np.nanmax([base["API"].max(), base["Metodo"].max()]))
-        figura.add_trace(go.Scatter(
-            x=base["API"], y=base["Metodo"], mode="markers",
-            name="Cartas", marker=dict(size=7, opacity=0.60, color=color),
-            customdata=np.column_stack([
-                base["Pozo"].astype(str), base["CartaId"].astype(str),
-                base["Delta"],
-            ]),
-            hovertemplate=(
-                "Pozo: %{customdata[0]}<br>Carta: %{customdata[1]}<br>"
-                "API: %{x:.1f}<br>Método: %{y:.1f}<br>"
-                "Diferencia: %{customdata[2]:+.1f}<extra></extra>"
+        mascara = valor_api.notna() & valor_calculado.notna()
+        delta = valor_calculado.loc[mascara] - valor_api.loc[mascara]
+        resumen_desplazamiento.append({
+            "Variable": nombre,
+            "Cartas": int(mascara.sum()),
+            "Sesgo calculado−API [m³/d]": delta.mean(),
+            "MAE [m³/d]": delta.abs().mean(),
+            "Correlación": (
+                pd.concat(
+                    [valor_api.loc[mascara], valor_calculado.loc[mascara]],
+                    axis=1,
+                ).corr().iloc[0, 1]
+                if mascara.sum() >= 2
+                else np.nan
             ),
-        ))
-        figura.add_trace(go.Scatter(
-            x=[minimo, maximo], y=[minimo, maximo], mode="lines",
-            name="Igualdad", line=dict(color="#9ca3af", dash="dash"),
-            hoverinfo="skip",
-        ))
-        figura.update_layout(
-            title=titulo, xaxis_title=x_titulo, yaxis_title=y_titulo,
-            height=390, margin=dict(l=10, r=10, t=45, b=40),
-            template="plotly_white",
-        )
-        return figura
-
-    total_cmp = len(cartas_contexto)
-    peso_actual_cmp = preparar_comparacion(
-        cartas_contexto, "Peso_Fluido_API_lbf", "Peso_Fluido_Horizontales_lbf"
+        })
+    st.dataframe(
+        pd.DataFrame(resumen_desplazamiento).round(3),
+        use_container_width=True,
+        hide_index=True,
     )
-    peso_exp_cmp = preparar_comparacion(
-        cartas_contexto, "Peso_Fluido_API_lbf", "Peso_Fluido_Experimental_lbf"
-    )
-    st.markdown("#### Peso de fluido")
-    st.dataframe(pd.DataFrame([
-        fila_resumen(peso_actual_cmp, total_cmp, "Actual", "lbf"),
-        fila_resumen(peso_exp_cmp, total_cmp, "Experimental", "lbf"),
-    ]).round(3), hide_index=True, use_container_width=True)
-    col_actual, col_exp = st.columns(2)
-    with col_actual:
-        st.plotly_chart(
-            grafico_comparacion(
-                peso_actual_cmp, "Horizontales actuales",
-                "Peso API [lbf]", "Peso estimado [lbf]", "#6b7280",
-            ),
-            use_container_width=True, key="peso_actual_vs_api",
-        )
-    with col_exp:
-        st.plotly_chart(
-            grafico_comparacion(
-                peso_exp_cmp, "Criterio manual equivalente (experimental)",
-                "Peso API [lbf]", "Peso estimado [lbf]", "#8b5cf6",
-            ),
-            use_container_width=True, key="peso_experimental_vs_api",
-        )
-
-    sum_actual_cmp = preparar_comparacion(
-        cartas_contexto, "Sumergencia_API_m", "Sumergencia_Propia_m"
-    )
-    sum_exp_cmp = preparar_comparacion(
-        cartas_contexto, "Sumergencia_API_m", "Sumergencia_Peso_Experimental_m"
-    )
-    st.markdown("#### Sumergencia calculada")
-    st.dataframe(pd.DataFrame([
-        fila_resumen(sum_actual_cmp, total_cmp, "Actual", "m"),
-        fila_resumen(sum_exp_cmp, total_cmp, "Experimental", "m"),
-    ]).round(3), hide_index=True, use_container_width=True)
-    col_actual, col_exp = st.columns(2)
-    with col_actual:
-        st.plotly_chart(
-            grafico_comparacion(
-                sum_actual_cmp, "Horizontales actuales",
-                "Sumergencia API [m]", "Sumergencia calculada [m]", "#0874d1",
-            ),
-            use_container_width=True, key="sum_actual_vs_api",
-        )
-    with col_exp:
-        st.plotly_chart(
-            grafico_comparacion(
-                sum_exp_cmp, "Criterio manual equivalente (experimental)",
-                "Sumergencia API [m]", "Sumergencia calculada [m]", "#8b5cf6",
-            ),
-            use_container_width=True, key="sum_experimental_vs_api",
-        )
 
     st.subheader("Pozos por diagnóstico robusto")
     conteo_robustos = (
@@ -1965,19 +1882,22 @@ no tenga más peso que otro. Todavía no se aplican umbrales diagnósticos.
                         f"Llenado operativo: {valor_texto(diag.get('Llenado_Operativo_pct'), '.1f', '%')} · "
                         f"Sumergencia API: {valor_texto(diag.get('Sumergencia_API_m'), '.1f', ' m')} "
                         f"({valor_texto(diag.get('Sumergencia_Relativa_pct'), '.1f', '%')}) · "
-                        f"propia: {valor_texto(diag.get('Sumergencia_Propia_m'), '.1f', ' m')} "
-                        f"({valor_texto(diag.get('Sumergencia_Relativa_Propia_pct'), '.1f', '%')})  \n"
-                        f"experimental: "
+                        f"calculada: "
                         f"{valor_texto(diag.get('Sumergencia_Peso_Experimental_m'), '.1f', ' m')} "
                         f"({valor_texto(diag.get('Sumergencia_Relativa_Peso_Experimental_pct'), '.1f', '%')})  \n"
                         f"Peso fluido API: "
                         f"{valor_texto(diag.get('Peso_Fluido_API_lbf'), '.0f', ' lbf')} · "
-                        f"horizontales: "
-                        f"{valor_texto(diag.get('Peso_Fluido_Horizontales_lbf'), '.0f', ' lbf')} · "
-                        f"experimental: "
+                        f"manual equivalente: "
                         f"{valor_texto(diag.get('Peso_Fluido_Experimental_lbf'), '.0f', ' lbf')}  \n"
-                        f"Diferencia propia − API: "
-                        f"{valor_texto(diag.get('Delta_Sumergencia_Propia_vs_API_m'), '+.1f', ' m')}  \n"
+                        f"SG usada: {valor_texto(diag.get('SG_Fluido_Peso_Experimental'), '.3f')} · "
+                        f"carga hidráulica corregida: "
+                        f"{valor_texto(diag.get('Carga_Hidraulica_Efectiva_Peso_Experimental_lbf'), '.0f', ' lbf')}  \n"
+                        f"Carrera efectiva propia/API: "
+                        f"{valor_texto(diag.get('Carrera_Efectiva_Fondo_Calculada_pulg'), '.1f', ' pulg')} / "
+                        f"{valor_texto(diag.get('Carrera_Efectiva_Fondo_API_pulg'), '.1f', ' pulg')}  \n"
+                        f"Desplazamiento efectivo propio/API: "
+                        f"{valor_texto(diag.get('Desplazamiento_Bruto_Efectivo_Calculado_m3_d'), '.2f', ' m³/d')} / "
+                        f"{valor_texto(diag.get('Desplazamiento_Bruto_Efectivo_API_m3_d'), '.2f', ' m³/d')}  \n"
                         f"Torque: {valor_texto(diag.get('Torque_Reductor_pct'), '.1f', '%')} · "
                         f"Carga estructural: {valor_texto(diag.get('Carga_Estructural_pct'), '.1f', '%')}  \n"
                         f"Acción: {diag.get('Accion_Sugerida', '—')}  \n"

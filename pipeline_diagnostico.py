@@ -20,6 +20,8 @@ API_PETROLEO_SUMERGENCIA_PROPIA = 25.0
 FRACCION_AGUA_SUMERGENCIA_PROPIA = 0.90
 FRACCION_PETROLEO_SUMERGENCIA_PROPIA = 0.10
 METROS_A_PIES = 3.280839895013123
+PSI_POR_KG_CM2 = 14.223343307
+GRAVEDAD_ESPECIFICA_REFERENCIA = 0.9904
 
 
 def calcular_sumergencia_desde_horizontales(
@@ -28,16 +30,26 @@ def calcular_sumergencia_desde_horizontales(
     profundidad_bomba_m,
     diametro_piston_pulg,
     horizontales_validas,
+    sg_fluido=None,
+    factor_carga_hidraulica=1.0,
 ):
     """Calcula sumergencia independiente usando horizontales finales."""
     salida = {
         "Calculo_Sumergencia_Propia_Valido": False,
         "Motivo_Sumergencia_Propia_No_Valida": "",
         "Peso_Fluido_Horizontales_lbf": np.nan,
+        "Carga_Hidraulica_Efectiva_lbf": np.nan,
+        "Factor_Carga_Hidraulica": np.nan,
         "Area_Piston_pulg2": np.nan,
         "Presion_Diferencial_Horizontales_psi": np.nan,
+        "Presion_Diferencial_Horizontales_kg_cm2": np.nan,
+        "Presion_Hidrostatica_Bomba_Sin_Sumergencia_kg_cm2": np.nan,
         "SG_Fluido_Asumido": np.nan,
         "Gradiente_Fluido_Asumido_psi_m": np.nan,
+        "Altura_Columna_Equivalente_m": np.nan,
+        "Sumergencia_Sobre_Bomba_m": np.nan,
+        "Sumergencia_Relativa_Sobre_Bomba_pct": np.nan,
+        "Nivel_Dinamico_Propio_m": np.nan,
         "Sumergencia_Propia_m": np.nan,
         "Sumergencia_Relativa_Propia_pct": np.nan,
     }
@@ -53,6 +65,7 @@ def calcular_sumergencia_desde_horizontales(
         carga_inferior_lbf,
         profundidad_bomba_m,
         diametro_piston_pulg,
+        factor_carga_hidraulica,
     ], dtype=float)
     if not np.isfinite(valores).all():
         salida["Motivo_Sumergencia_Propia_No_Valida"] = (
@@ -60,42 +73,230 @@ def calcular_sumergencia_desde_horizontales(
         )
         return salida
 
-    carga_superior, carga_inferior, profundidad_m, diametro_pulg = valores
+    (
+        carga_superior,
+        carga_inferior,
+        profundidad_m,
+        diametro_pulg,
+        factor_hidraulico,
+    ) = valores
     peso_fluido_lbf = carga_superior - carga_inferior
-    if peso_fluido_lbf <= 0 or profundidad_m <= 0 or diametro_pulg <= 0:
+    if (
+        peso_fluido_lbf <= 0
+        or profundidad_m <= 0
+        or diametro_pulg <= 0
+        or factor_hidraulico <= 0
+    ):
         salida["Motivo_Sumergencia_Propia_No_Valida"] = (
             "DATOS_FISICOS_NO_VALIDOS"
         )
         return salida
 
     area_piston = np.pi * diametro_pulg ** 2 / 4.0
-    sg_petroleo = 141.5 / (
-        API_PETROLEO_SUMERGENCIA_PROPIA + 131.5
-    )
-    sg_fluido = (
-        FRACCION_AGUA_SUMERGENCIA_PROPIA
-        + FRACCION_PETROLEO_SUMERGENCIA_PROPIA * sg_petroleo
-    )
-    gradiente_psi_m = 0.433 * sg_fluido * METROS_A_PIES
-    presion_diferencial_psi = peso_fluido_lbf / area_piston
+    sg_entrada = pd.to_numeric(sg_fluido, errors="coerce")
+    if not np.isfinite(sg_entrada) or sg_entrada <= 0:
+        sg_petroleo = 141.5 / (
+            API_PETROLEO_SUMERGENCIA_PROPIA + 131.5
+        )
+        sg_entrada = (
+            FRACCION_AGUA_SUMERGENCIA_PROPIA
+            + FRACCION_PETROLEO_SUMERGENCIA_PROPIA * sg_petroleo
+        )
+    carga_hidraulica_lbf = peso_fluido_lbf * factor_hidraulico
+    presion_diferencial_psi = carga_hidraulica_lbf / area_piston
+    presion_kg_cm2 = presion_diferencial_psi / PSI_POR_KG_CM2
+    # Convencion operativa usada por el cliente: una columna de fluido de
+    # gravedad especifica SG aporta SG kg/cm2 cada 10 m.
     altura_columna_sobre_bomba_m = (
-        presion_diferencial_psi / gradiente_psi_m
+        presion_kg_cm2 * 10.0 / sg_entrada
     )
-    sumergencia_m = profundidad_m - altura_columna_sobre_bomba_m
+    gradiente_psi_m = presion_diferencial_psi / max(
+        altura_columna_sobre_bomba_m,
+        1e-9,
+    )
+    # La carga medida equivale a la altura de columna desde el nivel
+    # dinamico hasta la bomba. Por lo tanto, la sumergencia sobre la bomba
+    # es profundidad de bomba menos esa altura equivalente. El nivel
+    # dinamico medido desde boca coincide con la altura equivalente.
+    sumergencia_sobre_bomba_m = (
+        profundidad_m - altura_columna_sobre_bomba_m
+    )
+    nivel_dinamico_m = altura_columna_sobre_bomba_m
+    presion_sin_sumergencia_kg_cm2 = profundidad_m * sg_entrada / 10.0
 
     salida.update({
         "Calculo_Sumergencia_Propia_Valido": True,
         "Peso_Fluido_Horizontales_lbf": float(peso_fluido_lbf),
+        "Carga_Hidraulica_Efectiva_lbf": float(carga_hidraulica_lbf),
+        "Factor_Carga_Hidraulica": float(factor_hidraulico),
         "Area_Piston_pulg2": float(area_piston),
         "Presion_Diferencial_Horizontales_psi": float(
             presion_diferencial_psi
         ),
-        "SG_Fluido_Asumido": float(sg_fluido),
-        "Gradiente_Fluido_Asumido_psi_m": float(gradiente_psi_m),
-        "Sumergencia_Propia_m": float(sumergencia_m),
-        "Sumergencia_Relativa_Propia_pct": float(
-            100.0 * sumergencia_m / profundidad_m
+        "Presion_Diferencial_Horizontales_kg_cm2": float(
+            presion_kg_cm2
         ),
+        "Presion_Hidrostatica_Bomba_Sin_Sumergencia_kg_cm2": float(
+            presion_sin_sumergencia_kg_cm2
+        ),
+        "SG_Fluido_Asumido": float(sg_entrada),
+        "Gradiente_Fluido_Asumido_psi_m": float(gradiente_psi_m),
+        "Altura_Columna_Equivalente_m": float(
+            altura_columna_sobre_bomba_m
+        ),
+        "Sumergencia_Sobre_Bomba_m": float(sumergencia_sobre_bomba_m),
+        "Sumergencia_Relativa_Sobre_Bomba_pct": float(
+            100.0 * sumergencia_sobre_bomba_m / profundidad_m
+        ),
+        "Nivel_Dinamico_Propio_m": float(nivel_dinamico_m),
+        # Alias historico: desde esta version representa sumergencia sobre
+        # la bomba, no profundidad del nivel desde boca.
+        "Sumergencia_Propia_m": float(sumergencia_sobre_bomba_m),
+        "Sumergencia_Relativa_Propia_pct": float(
+            100.0 * sumergencia_sobre_bomba_m / profundidad_m
+        ),
+    })
+    return salida
+
+
+# Calibracion puntual del criterio manual-equivalente. La carta patron es
+# YPF.SC.ECh-277(d), CartaId 26264048, 2026-08-12 15:55. El especialista
+# ubico manualmente los niveles en ValvulaMovil=18119 lbf y
+# ValvulaFija=12355 lbf: peso de fluido de referencia = 5764 lbf.
+PESO_MANUAL_REFERENCIA_ECH277_LBF = 5764.0
+PESO_SIN_CALIBRAR_REFERENCIA_ECH277_LBF = 6525.192875
+FACTOR_CALIBRACION_PESO_MANUAL = (
+    PESO_MANUAL_REFERENCIA_ECH277_LBF
+    / PESO_SIN_CALIBRAR_REFERENCIA_ECH277_LBF
+)
+
+# La referencia de 197 m informada por el software del cliente se conserva
+# exclusivamente como dato de comparacion. No se usa para calibrar ni forzar
+# la sumergencia propia: el calculo propio convierte directamente el peso de
+# fluido de las nuevas horizontales en presion sobre el piston.
+
+
+def calcular_desplazamiento_bruto_efectivo(
+    diametro_piston_pulg,
+    carrera_inicio_pulg,
+    carrera_fin_pulg,
+    gpm,
+):
+    """Desplazamiento geometrico diario con la carrera efectiva de fondo."""
+    valores = pd.to_numeric(
+        pd.Series([
+            diametro_piston_pulg,
+            carrera_inicio_pulg,
+            carrera_fin_pulg,
+            gpm,
+        ]),
+        errors="coerce",
+    ).to_numpy(dtype=float)
+    if not np.isfinite(valores).all():
+        return {
+            "Carrera_Efectiva_Fondo_pulg": np.nan,
+            "Desplazamiento_Bruto_Efectivo_m3_d": np.nan,
+        }
+    diametro, inicio, fin, golpes_minuto = valores
+    carrera = fin - inicio
+    if diametro <= 0 or carrera <= 0 or golpes_minuto <= 0:
+        return {
+            "Carrera_Efectiva_Fondo_pulg": np.nan,
+            "Desplazamiento_Bruto_Efectivo_m3_d": np.nan,
+        }
+    area = np.pi * diametro ** 2 / 4.0
+    desplazamiento = (
+        area * carrera * golpes_minuto * 1440.0 * 1.6387064e-5
+    )
+    return {
+        "Carrera_Efectiva_Fondo_pulg": float(carrera),
+        "Desplazamiento_Bruto_Efectivo_m3_d": float(desplazamiento),
+    }
+
+
+def calcular_desplazamiento_desde_carrera(
+    diametro_piston_pulg,
+    carrera_pulg,
+    gpm,
+):
+    """Desplazamiento diario a partir de una carrera ya determinada."""
+    valores = pd.to_numeric(
+        pd.Series([diametro_piston_pulg, carrera_pulg, gpm]),
+        errors="coerce",
+    ).to_numpy(dtype=float)
+    if not np.isfinite(valores).all():
+        return np.nan
+    diametro, carrera, golpes_minuto = valores
+    if diametro <= 0 or carrera <= 0 or golpes_minuto <= 0:
+        return np.nan
+    area = np.pi * diametro ** 2 / 4.0
+    return float(
+        area * carrera * golpes_minuto * 1440.0 * 1.6387064e-5
+    )
+
+
+def estimar_carrera_efectiva_en_horizontal_superior(
+    posicion,
+    carga,
+    carga_horizontal_superior,
+):
+    """Mide la distancia entre cruces de la carta con el nivel superior.
+
+    Esta es una medicion geometrica independiente de los campos de carrera
+    efectiva de la API. Los cruces se interpolan linealmente sobre el
+    contorno secuencial de la carta.
+    """
+    x = np.asarray(posicion, dtype=float)
+    y = np.asarray(carga, dtype=float)
+    nivel = pd.to_numeric(carga_horizontal_superior, errors="coerce")
+    salida = {
+        "Carrera_Efectiva_Fondo_Calculada_pulg": np.nan,
+        "Posicion_Cruce_Superior_Izquierda_pulg": np.nan,
+        "Posicion_Cruce_Superior_Derecha_pulg": np.nan,
+        "Cantidad_Cruces_Horizontal_Superior": 0,
+    }
+    if (
+        x.size < 3
+        or x.size != y.size
+        or not np.isfinite(nivel)
+    ):
+        return salida
+
+    cruces = []
+    for indice in range(x.size):
+        siguiente = (indice + 1) % x.size
+        x0, x1 = x[indice], x[siguiente]
+        y0, y1 = y[indice], y[siguiente]
+        if not np.isfinite([x0, x1, y0, y1]).all():
+            continue
+        d0, d1 = y0 - nivel, y1 - nivel
+        if d0 == 0:
+            cruces.append(float(x0))
+        if d0 * d1 < 0 and y1 != y0:
+            fraccion = (nivel - y0) / (y1 - y0)
+            cruces.append(float(x0 + fraccion * (x1 - x0)))
+
+    if not cruces:
+        return salida
+    cruces = np.asarray(sorted(cruces), dtype=float)
+    tolerancia = max(float(np.ptp(x)) * 0.002, 1e-6)
+    unicos = [float(cruces[0])]
+    for valor in cruces[1:]:
+        if abs(valor - unicos[-1]) > tolerancia:
+            unicos.append(float(valor))
+    salida["Cantidad_Cruces_Horizontal_Superior"] = len(unicos)
+    if len(unicos) < 2:
+        return salida
+
+    izquierda = min(unicos)
+    derecha = max(unicos)
+    carrera = derecha - izquierda
+    if carrera <= 0:
+        return salida
+    salida.update({
+        "Carrera_Efectiva_Fondo_Calculada_pulg": float(carrera),
+        "Posicion_Cruce_Superior_Izquierda_pulg": float(izquierda),
+        "Posicion_Cruce_Superior_Derecha_pulg": float(derecha),
     })
     return salida
 
@@ -119,7 +320,11 @@ def estimar_horizontales_experimentales_peso(
         "Motivo_Peso_Experimental_No_Valido": "",
         "Carga_Superior_Peso_Experimental_lbf": np.nan,
         "Carga_Inferior_Peso_Experimental_lbf": np.nan,
+        "Peso_Fluido_Experimental_Sin_Calibrar_lbf": np.nan,
         "Peso_Fluido_Experimental_lbf": np.nan,
+        "Factor_Calibracion_Peso_Experimental": (
+            FACTOR_CALIBRACION_PESO_MANUAL
+        ),
         "Metodo_Peso_Experimental": "NO_ESTIMABLE",
         "Transferencia_Derecha_Peso_Detectada": False,
     }
@@ -242,13 +447,23 @@ def estimar_horizontales_experimentales_peso(
         nivel_inferior = float(
             np.nanquantile(medianas_inferiores, 0.90)
         )
-        peso = nivel_superior - nivel_inferior
-        if not np.isfinite(peso) or peso <= 0:
+        peso_sin_calibrar = nivel_superior - nivel_inferior
+        if not np.isfinite(peso_sin_calibrar) or peso_sin_calibrar <= 0:
             raise ValueError("PESO_MANUAL_EQUIVALENTE_NO_POSITIVO")
+
+        # La calibracion modifica solamente la apertura entre niveles. Se
+        # conserva el centro para no introducir un desplazamiento artificial
+        # de carga y se acercan ambas horizontales de forma simetrica.
+        centro = 0.5 * (nivel_superior + nivel_inferior)
+        peso = float(
+            peso_sin_calibrar * FACTOR_CALIBRACION_PESO_MANUAL
+        )
+        nivel_superior = float(centro + 0.5 * peso)
+        nivel_inferior = float(centro - 0.5 * peso)
 
         transferencia_derecha = bool(grilla[fin] < 0.86)
         metodo = (
-            "HOMBROS_INDEPENDIENTES_ADAPTATIVOS_"
+            "HOMBROS_INDEPENDIENTES_ADAPTATIVOS_CALIBRADOS_ECH277_"
             + (
                 "CON_TRANSFERENCIA_DERECHA"
                 if transferencia_derecha
@@ -260,6 +475,9 @@ def estimar_horizontales_experimentales_peso(
             "Calculo_Peso_Experimental_Valido": True,
             "Carga_Superior_Peso_Experimental_lbf": nivel_superior,
             "Carga_Inferior_Peso_Experimental_lbf": nivel_inferior,
+            "Peso_Fluido_Experimental_Sin_Calibrar_lbf": float(
+                peso_sin_calibrar
+            ),
             "Peso_Fluido_Experimental_lbf": float(peso),
             "Metodo_Peso_Experimental": metodo,
             "Transferencia_Derecha_Peso_Detectada": transferencia_derecha,
@@ -2883,11 +3101,30 @@ def procesar_json(origen, silencioso=True):
                 carta.get("DiametroPistonBomba"),
                 errors="coerce",
             )
+            gravedad_especifica = pd.to_numeric(
+                carta.get("GravedadEspecifica"),
+                errors="coerce",
+            )
+            desplazamiento_desde_carrera_api = (
+                calcular_desplazamiento_bruto_efectivo(
+                    diametro_piston_pulg=diametro_piston_pulg,
+                    carrera_inicio_pulg=pd.to_numeric(
+                        carta.get("CarreraEfectivaBombaInicio"),
+                        errors="coerce",
+                    ),
+                    carrera_fin_pulg=pd.to_numeric(
+                        carta.get("CarreraEfectivaBombaFin"),
+                        errors="coerce",
+                    ),
+                    gpm=pd.to_numeric(carta.get("GPM"), errors="coerce"),
+                )
+            )
             sumergencia_propia = calcular_sumergencia_desde_horizontales(
                 carga_superior_lbf=carga_asc,
                 carga_inferior_lbf=carga_desc,
                 profundidad_bomba_m=profundidad_bomba_m,
                 diametro_piston_pulg=diametro_piston_pulg,
+                sg_fluido=gravedad_especifica,
                 horizontales_validas=(
                     calidad["confiables"]
                     and integridad["valida"]
@@ -2906,6 +3143,63 @@ def procesar_json(origen, silencioso=True):
                     ),
                 )
             )
+
+            # Carrera efectiva propia: distancia horizontal entre los dos
+            # cruces del contorno real con la nueva horizontal superior
+            # reservada para peso de fluido. No se vuelve a multiplicar por
+            # llenado: esta carrera ya representa la porcion efectiva.
+            carrera_efectiva_calculada = (
+                estimar_carrera_efectiva_en_horizontal_superior(
+                    posicion=posicion,
+                    carga=carga,
+                    carga_horizontal_superior=(
+                        horizontales_peso_experimental[
+                            "Carga_Superior_Peso_Experimental_lbf"
+                        ]
+                    ),
+                )
+            )
+            desplazamiento_calculado_m3_d = (
+                calcular_desplazamiento_desde_carrera(
+                    diametro_piston_pulg=diametro_piston_pulg,
+                    carrera_pulg=carrera_efectiva_calculada[
+                        "Carrera_Efectiva_Fondo_Calculada_pulg"
+                    ],
+                    gpm=pd.to_numeric(carta.get("GPM"), errors="coerce"),
+                )
+            )
+            carrera_total_fondo_calculada_pulg = float(np.ptp(posicion))
+            desplazamiento_total_calculado_m3_d = (
+                calcular_desplazamiento_desde_carrera(
+                    diametro_piston_pulg=diametro_piston_pulg,
+                    carrera_pulg=carrera_total_fondo_calculada_pulg,
+                    gpm=pd.to_numeric(carta.get("GPM"), errors="coerce"),
+                )
+            )
+            escurrimiento_calculado_m3_d = (
+                desplazamiento_total_calculado_m3_d
+                - desplazamiento_calculado_m3_d
+                if np.isfinite(desplazamiento_total_calculado_m3_d)
+                and np.isfinite(desplazamiento_calculado_m3_d)
+                else np.nan
+            )
+            llenado_implicito_carrera_pct = (
+                100.0 * desplazamiento_calculado_m3_d
+                / desplazamiento_total_calculado_m3_d
+                if np.isfinite(desplazamiento_total_calculado_m3_d)
+                and desplazamiento_total_calculado_m3_d > 0
+                and np.isfinite(desplazamiento_calculado_m3_d)
+                else np.nan
+            )
+            desplazamiento_api_m3_d = pd.to_numeric(
+                carta.get("DesplazamientoEfectivo"), errors="coerce"
+            )
+            desplazamiento_total_api_m3_d = pd.to_numeric(
+                carta.get("DesplazamientoTotal"), errors="coerce"
+            )
+            escurrimiento_api_m3_d = pd.to_numeric(
+                carta.get("Escurrimiento"), errors="coerce"
+            )
             sumergencia_experimental_base = (
                 calcular_sumergencia_desde_horizontales(
                     carga_superior_lbf=(
@@ -2920,6 +3214,10 @@ def procesar_json(origen, silencioso=True):
                     ),
                     profundidad_bomba_m=profundidad_bomba_m,
                     diametro_piston_pulg=diametro_piston_pulg,
+                    # Se usa una gravedad especifica unica de 0.9904 para
+                    # todos los pozos, segun la hipotesis acordada para esta
+                    # comparacion experimental.
+                    sg_fluido=GRAVEDAD_ESPECIFICA_REFERENCIA,
                     horizontales_validas=(
                         horizontales_peso_experimental[
                             "Calculo_Peso_Experimental_Valido"
@@ -2946,14 +3244,52 @@ def procesar_json(origen, silencioso=True):
                         "Presion_Diferencial_Horizontales_psi"
                     ]
                 ),
+                "Presion_Diferencial_Peso_Experimental_kg_cm2": (
+                    sumergencia_experimental_base[
+                        "Presion_Diferencial_Horizontales_kg_cm2"
+                    ]
+                ),
+                "Presion_Sin_Sumergencia_Peso_Experimental_kg_cm2": (
+                    sumergencia_experimental_base[
+                        "Presion_Hidrostatica_Bomba_Sin_Sumergencia_kg_cm2"
+                    ]
+                ),
+                "Altura_Columna_Peso_Experimental_m": (
+                    sumergencia_experimental_base[
+                        "Altura_Columna_Equivalente_m"
+                    ]
+                ),
                 "Sumergencia_Peso_Experimental_m": (
                     sumergencia_experimental_base[
-                        "Sumergencia_Propia_m"
+                        "Sumergencia_Sobre_Bomba_m"
+                    ]
+                ),
+                "Nivel_Dinamico_Peso_Experimental_m": (
+                    sumergencia_experimental_base[
+                        "Nivel_Dinamico_Propio_m"
                     ]
                 ),
                 "Sumergencia_Relativa_Peso_Experimental_pct": (
                     sumergencia_experimental_base[
                         "Sumergencia_Relativa_Propia_pct"
+                    ]
+                ),
+                "Carga_Hidraulica_Efectiva_Peso_Experimental_lbf": (
+                    sumergencia_experimental_base[
+                        "Carga_Hidraulica_Efectiva_lbf"
+                    ]
+                ),
+                "Factor_Carga_Hidraulica_Peso_Experimental": (
+                    sumergencia_experimental_base[
+                        "Factor_Carga_Hidraulica"
+                    ]
+                ),
+                "SG_Fluido_Peso_Experimental": (
+                    sumergencia_experimental_base["SG_Fluido_Asumido"]
+                ),
+                "Gradiente_Fluido_Peso_Experimental_psi_m": (
+                    sumergencia_experimental_base[
+                        "Gradiente_Fluido_Asumido_psi_m"
                     ]
                 ),
             }
@@ -2962,6 +3298,61 @@ def procesar_json(origen, silencioso=True):
                 "GPM": pd.to_numeric(carta.get("GPM"), errors="coerce"),
                 "Profundidad_Bomba_m": profundidad_bomba_m,
                 "Diametro_Piston_pulg": diametro_piston_pulg,
+                "Gravedad_Especifica_API": gravedad_especifica,
+                # Alias historicos, conservados para compatibilidad.
+                "Carrera_Efectiva_Fondo_pulg": (
+                    desplazamiento_desde_carrera_api[
+                        "Carrera_Efectiva_Fondo_pulg"
+                    ]
+                ),
+                "Desplazamiento_Bruto_Efectivo_m3_d": (
+                    desplazamiento_calculado_m3_d
+                ),
+                **carrera_efectiva_calculada,
+                "Carrera_Efectiva_Fondo_API_pulg": (
+                    desplazamiento_desde_carrera_api[
+                        "Carrera_Efectiva_Fondo_pulg"
+                    ]
+                ),
+                "Desplazamiento_Desde_Carrera_Efectiva_API_m3_d": (
+                    desplazamiento_desde_carrera_api[
+                        "Desplazamiento_Bruto_Efectivo_m3_d"
+                    ]
+                ),
+                "Desplazamiento_Bruto_Efectivo_Calculado_m3_d": (
+                    desplazamiento_calculado_m3_d
+                ),
+                "Carrera_Total_Fondo_Calculada_pulg": (
+                    carrera_total_fondo_calculada_pulg
+                ),
+                "Desplazamiento_Bruto_Total_Calculado_m3_d": (
+                    desplazamiento_total_calculado_m3_d
+                ),
+                "Escurrimiento_Calculado_m3_d": (
+                    escurrimiento_calculado_m3_d
+                ),
+                "Llenado_Implicito_Carrera_Efectiva_pct": (
+                    llenado_implicito_carrera_pct
+                ),
+                "Desplazamiento_Bruto_Efectivo_API_m3_d": (
+                    desplazamiento_api_m3_d
+                ),
+                "Desplazamiento_Bruto_Total_API_m3_d": (
+                    desplazamiento_total_api_m3_d
+                ),
+                "Escurrimiento_API_m3_d": escurrimiento_api_m3_d,
+                "Delta_Desplazamiento_Calculado_vs_API_m3_d": (
+                    desplazamiento_calculado_m3_d
+                    - desplazamiento_api_m3_d
+                ),
+                "Delta_Desplazamiento_Total_Calculado_vs_API_m3_d": (
+                    desplazamiento_total_calculado_m3_d
+                    - desplazamiento_total_api_m3_d
+                ),
+                "Delta_Escurrimiento_Calculado_vs_API_m3_d": (
+                    escurrimiento_calculado_m3_d
+                    - escurrimiento_api_m3_d
+                ),
                 "Carrera_Fondo_pulg": float(np.ptp(posicion)),
                 "Estado_Horizontales": calidad["estado"],
                 "Evidencias_Horizontales": calidad["evidencias"],
@@ -7165,9 +7556,134 @@ def procesar_json(origen, silencioso=True):
                     "Sumergencia_Peso_Experimental_m",
                     np.nan,
                 ),
+            "Presion_Diferencial_Peso_Experimental_psi":
+                resultado.get(
+                    "Presion_Diferencial_Peso_Experimental_psi",
+                    np.nan,
+                ),
+            "Presion_Diferencial_Peso_Experimental_kg_cm2":
+                resultado.get(
+                    "Presion_Diferencial_Peso_Experimental_kg_cm2",
+                    np.nan,
+                ),
+            "Presion_Sin_Sumergencia_Peso_Experimental_kg_cm2":
+                resultado.get(
+                    "Presion_Sin_Sumergencia_Peso_Experimental_kg_cm2",
+                    np.nan,
+                ),
+            "Altura_Columna_Peso_Experimental_m":
+                resultado.get(
+                    "Altura_Columna_Peso_Experimental_m",
+                    np.nan,
+                ),
+            "Nivel_Dinamico_Peso_Experimental_m":
+                resultado.get(
+                    "Nivel_Dinamico_Peso_Experimental_m",
+                    np.nan,
+                ),
             "Sumergencia_Relativa_Peso_Experimental_pct":
                 resultado.get(
                     "Sumergencia_Relativa_Peso_Experimental_pct",
+                    np.nan,
+                ),
+            "Carga_Hidraulica_Efectiva_Peso_Experimental_lbf":
+                resultado.get(
+                    "Carga_Hidraulica_Efectiva_Peso_Experimental_lbf",
+                    np.nan,
+                ),
+            "Factor_Carga_Hidraulica_Peso_Experimental":
+                resultado.get(
+                    "Factor_Carga_Hidraulica_Peso_Experimental",
+                    np.nan,
+                ),
+            "SG_Fluido_Peso_Experimental":
+                resultado.get(
+                    "SG_Fluido_Peso_Experimental",
+                    np.nan,
+                ),
+            "Gradiente_Fluido_Peso_Experimental_psi_m":
+                resultado.get(
+                    "Gradiente_Fluido_Peso_Experimental_psi_m",
+                    np.nan,
+                ),
+            "Gravedad_Especifica_API":
+                resultado.get("Gravedad_Especifica_API", np.nan),
+            "Carrera_Efectiva_Fondo_pulg":
+                resultado.get("Carrera_Efectiva_Fondo_pulg", np.nan),
+            "Desplazamiento_Bruto_Efectivo_m3_d":
+                resultado.get(
+                    "Desplazamiento_Bruto_Efectivo_m3_d",
+                    np.nan,
+                ),
+            "Carrera_Efectiva_Fondo_Calculada_pulg":
+                resultado.get(
+                    "Carrera_Efectiva_Fondo_Calculada_pulg", np.nan
+                ),
+            "Posicion_Cruce_Superior_Izquierda_pulg":
+                resultado.get(
+                    "Posicion_Cruce_Superior_Izquierda_pulg", np.nan
+                ),
+            "Posicion_Cruce_Superior_Derecha_pulg":
+                resultado.get(
+                    "Posicion_Cruce_Superior_Derecha_pulg", np.nan
+                ),
+            "Cantidad_Cruces_Horizontal_Superior":
+                resultado.get(
+                    "Cantidad_Cruces_Horizontal_Superior", 0
+                ),
+            "Carrera_Efectiva_Fondo_API_pulg":
+                resultado.get("Carrera_Efectiva_Fondo_API_pulg", np.nan),
+            "Desplazamiento_Desde_Carrera_Efectiva_API_m3_d":
+                resultado.get(
+                    "Desplazamiento_Desde_Carrera_Efectiva_API_m3_d",
+                    np.nan,
+                ),
+            "Desplazamiento_Bruto_Efectivo_Calculado_m3_d":
+                resultado.get(
+                    "Desplazamiento_Bruto_Efectivo_Calculado_m3_d",
+                    np.nan,
+                ),
+            "Carrera_Total_Fondo_Calculada_pulg":
+                resultado.get(
+                    "Carrera_Total_Fondo_Calculada_pulg", np.nan
+                ),
+            "Desplazamiento_Bruto_Total_Calculado_m3_d":
+                resultado.get(
+                    "Desplazamiento_Bruto_Total_Calculado_m3_d",
+                    np.nan,
+                ),
+            "Escurrimiento_Calculado_m3_d":
+                resultado.get(
+                    "Escurrimiento_Calculado_m3_d", np.nan
+                ),
+            "Llenado_Implicito_Carrera_Efectiva_pct":
+                resultado.get(
+                    "Llenado_Implicito_Carrera_Efectiva_pct",
+                    np.nan,
+                ),
+            "Desplazamiento_Bruto_Efectivo_API_m3_d":
+                resultado.get(
+                    "Desplazamiento_Bruto_Efectivo_API_m3_d", np.nan
+                ),
+            "Desplazamiento_Bruto_Total_API_m3_d":
+                resultado.get(
+                    "Desplazamiento_Bruto_Total_API_m3_d", np.nan
+                ),
+            "Escurrimiento_API_m3_d":
+                resultado.get("Escurrimiento_API_m3_d", np.nan),
+            "Delta_Desplazamiento_Calculado_vs_API_m3_d":
+                resultado.get(
+                    "Delta_Desplazamiento_Calculado_vs_API_m3_d",
+                    np.nan,
+                ),
+            "Delta_Desplazamiento_Total_Calculado_vs_API_m3_d":
+                resultado.get(
+                    "Delta_Desplazamiento_Total_Calculado_vs_API_m3_d",
+                    np.nan,
+                ),
+            "Delta_Escurrimiento_Calculado_vs_API_m3_d":
+                resultado.get(
+                    "Delta_Escurrimiento_Calculado_vs_API_m3_d",
                     np.nan,
                 ),
             "Delta_Sumergencia_Peso_Experimental_vs_API_m": (
