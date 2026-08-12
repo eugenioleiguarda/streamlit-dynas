@@ -1276,9 +1276,23 @@ with tab_resumen:
     ]
     resumen_desplazamiento = []
     for nombre, campo_api, campo_calculado in columnas_desplazamiento:
-        valor_api = pd.to_numeric(cartas_contexto.get(campo_api), errors="coerce")
+        # ``DataFrame.get`` devuelve ``None`` cuando una versión anterior
+        # del pipeline no generó la columna. Convertir ese ``None`` produce
+        # un escalar y luego falla al usar ``.notna()``. Conservamos siempre
+        # el mismo índice para que una columna ausente sea simplemente una
+        # serie completa de NaN y la comparación muestre cobertura cero.
+        serie_vacia = pd.Series(
+            np.nan,
+            index=cartas_contexto.index,
+            dtype=float,
+        )
+        valor_api = pd.to_numeric(
+            cartas_contexto.get(campo_api, serie_vacia),
+            errors="coerce",
+        )
         valor_calculado = pd.to_numeric(
-            cartas_contexto.get(campo_calculado), errors="coerce"
+            cartas_contexto.get(campo_calculado, serie_vacia),
+            errors="coerce",
         )
         mascara = valor_api.notna() & valor_calculado.notna()
         delta = valor_calculado.loc[mascara] - valor_api.loc[mascara]
