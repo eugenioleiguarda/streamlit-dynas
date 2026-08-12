@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ast
-import importlib
 import json
 from math import ceil
 
@@ -18,12 +17,9 @@ from controles_reales import (
     normalizar_pozo,
 )
 
-# Streamlit puede conservar módulos importados entre reruns. La recarga
-# explícita garantiza que un cambio subido a pipeline_diagnostico.py se use
-# inmediatamente y no quede mezclado con una versión anterior en memoria.
-pipeline_diagnostico_modulo = importlib.reload(
-    pipeline_diagnostico_modulo
-)
+# Community Cloud carga el módulo desde el commit en cada redeploy. Evitamos
+# recargarlo explícitamente porque un rerun puede conservar una referencia
+# anterior que ya no coincide con sys.modules y abortar el arranque.
 a_array = pipeline_diagnostico_modulo.a_array
 procesar_json = pipeline_diagnostico_modulo.procesar_json
 calcular_sumergencia_relativa = (
@@ -50,7 +46,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-12-peso-manual-equivalente-v33"
+    "2026-08-12-peso-manual-equivalente-v34-import"
 )
 
 COLORES = {
