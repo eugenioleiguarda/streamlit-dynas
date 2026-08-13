@@ -46,7 +46,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-13-carrera-geometrica-horizontales-peso-v42"
+    "2026-08-13-hombros-posicion-peso-v44"
 )
 
 COLORES = {

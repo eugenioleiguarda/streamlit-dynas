@@ -164,7 +164,10 @@ def calcular_sumergencia_desde_horizontales(
 # ubico manualmente los niveles en ValvulaMovil=18119 lbf y
 # ValvulaFija=12355 lbf: peso de fluido de referencia = 5764 lbf.
 PESO_MANUAL_REFERENCIA_ECH277_LBF = 5764.0
-PESO_SIN_CALIBRAR_REFERENCIA_ECH277_LBF = 6415.0
+# Con el criterio de hombros cinemáticos, la carta patrón entrega 6123 lbf
+# antes de calibrar: 5725 lbf en el último punto que todavía avanza hacia
+# la derecha y -398 lbf en el primer mínimo local de posición a la izquierda.
+PESO_SIN_CALIBRAR_REFERENCIA_ECH277_LBF = 6123.0
 FACTOR_CALIBRACION_PESO_MANUAL = (
     PESO_MANUAL_REFERENCIA_ECH277_LBF
     / PESO_SIN_CALIBRAR_REFERENCIA_ECH277_LBF
@@ -308,13 +311,13 @@ def estimar_horizontales_experimentales_peso(
     posicion=None,
     carga=None,
 ):
-    """Estima el peso con hombros en el orden original de adquisicion.
+    """Estima el peso con los hombros cinemáticos de la carta real.
 
-    Es independiente de la carta ideal, el llenado y los diagnosticos. El
-    hombro superior se busca antes del inicio descendente y el inferior
-    inmediatamente antes del inicio ascendente. Las ventanas robustas evitan
-    que una transferencia extendida por compresion o un golpe de fluido
-    desplacen los niveles hacia los extremos geometricos.
+    Es independiente de la carta ideal, el llenado y los diagnósticos. En la
+    derecha toma la última muestra que todavía avanza antes de alcanzar la
+    posición máxima. En la izquierda toma el primer mínimo local que termina
+    el desplazamiento hacia la izquierda; si no existe un lazo dinámico,
+    toma la muestra inmediatamente anterior a la meseta del extremo.
     """
     salida = {
         "Calculo_Peso_Experimental_Valido": False,
@@ -346,48 +349,84 @@ def estimar_horizontales_experimentales_peso(
         if len(x_original) < 10:
             raise ValueError("SECUENCIA_ORIGINAL_INSUFICIENTE")
 
-        x_asc = np.asarray(ascendente["posicion"], dtype=float)
-        y_asc = np.asarray(ascendente["carga"], dtype=float)
-        x_desc = np.asarray(descendente["posicion"], dtype=float)
-        y_desc = np.asarray(descendente["carga"], dtype=float)
-        validos_asc = np.isfinite(x_asc) & np.isfinite(y_asc)
-        validos_desc = np.isfinite(x_desc) & np.isfinite(y_desc)
-        x_asc, y_asc = x_asc[validos_asc], y_asc[validos_asc]
-        x_desc, y_desc = x_desc[validos_desc], y_desc[validos_desc]
-        if min(len(x_asc), len(x_desc)) < 5:
-            raise ValueError("RAMAS_INSUFICIENTES")
-
-        x_min = float(min(np.min(x_asc), np.min(x_desc)))
-        x_max = float(max(np.max(x_asc), np.max(x_desc)))
+        x_min = float(np.min(x_original))
+        x_max = float(np.max(x_original))
         rango_x = x_max - x_min
         if rango_x <= 1e-9:
             raise ValueError("RECORRIDO_NULO")
 
-        # Hombro superior: primer punto de la descendente que abandona de
-        # forma efectiva la posicion maxima. No se usa la meseta alta de la
-        # ascendente, que en compresion puede quedar muy por encima del giro.
-        tolerancia_x = max(0.005 * rango_x, 1e-9)
-        indices_salida_maximo = np.flatnonzero(
-            x_desc < (x_max - tolerancia_x)
-        )
-        if len(indices_salida_maximo) == 0:
-            raise ValueError("HOMBRO_SUPERIOR_NO_ENCONTRADO")
-        indice_superior_rama = int(indices_salida_maximo[0])
-        nivel_superior = float(y_desc[indice_superior_rama])
+        dx = np.diff(x_original)
+        tolerancia_movimiento = max(0.0025 * rango_x, 1e-9)
+        tolerancia_extremo = max(0.015 * rango_x, tolerancia_movimiento)
 
-        # Hombro inferior: dentro del ultimo 10 % de recorrido hacia la
-        # izquierda, se toma el valle que precede la subida rapida de carga.
-        # Asi se ignora la transferencia vertical posterior en el extremo.
-        indices_banda_izquierda = np.flatnonzero(
-            x_desc <= (x_min + 0.10 * rango_x)
-        )
-        if len(indices_banda_izquierda) == 0:
-            raise ValueError("HOMBRO_INFERIOR_NO_ENCONTRADO")
-        indice_inferior_rama = int(indices_banda_izquierda[
-            np.argmin(y_desc[indices_banda_izquierda])
-        ])
-        nivel_inferior = float(y_desc[indice_inferior_rama])
-        indice_inferior_original = indice_inferior_rama
+        # Derecha: detecta la llegada al máximo y conserva el último punto
+        # que todavía avanzaba. De ese modo no usa la carga de la posterior
+        # transferencia vertical/redondeada.
+        candidatos_derecha = []
+        for indice in range(1, len(dx)):
+            llego_al_extremo = (
+                x_original[indice] >= x_max - tolerancia_extremo
+            )
+            venia_avanzando = dx[indice - 1] > tolerancia_movimiento
+            dejo_de_avanzar = dx[indice] <= tolerancia_movimiento
+            if llego_al_extremo and venia_avanzando and dejo_de_avanzar:
+                candidatos_derecha.append(indice)
+        if candidatos_derecha:
+            # ``indice`` ya es la primera muestra posterior a la llegada:
+            # el hombro pedido es la muestra inmediatamente anterior.
+            indice_superior_original = max(
+                0,
+                int(candidatos_derecha[0]) - 1,
+            )
+        else:
+            indice_maximo = int(np.argmax(x_original))
+            indice_superior_original = max(0, indice_maximo - 1)
+        nivel_superior = float(y_original[indice_superior_original])
+
+        # Izquierda: después del hombro derecho se busca primero una
+        # inversión real izquierda->derecha (pequeño lazo dinámico). Cuando
+        # la posición queda estacionaria en el extremo, se usa la última
+        # muestra que todavía avanzaba hacia la izquierda.
+        indice_inferior_original = None
+        inicio_busqueda = min(indice_superior_original + 1, len(dx) - 1)
+        for indice in range(max(1, inicio_busqueda), len(dx)):
+            cerca_izquierda = (
+                x_original[indice] <= x_min + 0.20 * rango_x
+            )
+            invierte = (
+                dx[indice - 1] < -tolerancia_movimiento
+                and dx[indice] > tolerancia_movimiento
+            )
+            if cerca_izquierda and invierte:
+                indice_inferior_original = int(indice)
+                break
+        if indice_inferior_original is None:
+            for indice in range(max(1, inicio_busqueda), len(dx)):
+                cerca_izquierda = (
+                    x_original[indice] <= x_min + tolerancia_extremo
+                )
+                venia_hacia_izquierda = (
+                    dx[indice - 1] < -tolerancia_movimiento
+                )
+                dejo_de_avanzar = abs(dx[indice]) <= tolerancia_movimiento
+                if (
+                    cerca_izquierda
+                    and venia_hacia_izquierda
+                    and dejo_de_avanzar
+                ):
+                    # En una detención (sin inversión de sentido), el
+                    # hombro es el último punto que todavía avanzaba hacia
+                    # la izquierda, no la primera muestra estacionaria.
+                    indice_inferior_original = max(0, int(indice) - 1)
+                    break
+        if indice_inferior_original is None:
+            tramo_posterior = x_original[indice_superior_original + 1:]
+            if len(tramo_posterior) == 0:
+                raise ValueError("HOMBRO_INFERIOR_NO_ENCONTRADO")
+            indice_inferior_original = int(
+                indice_superior_original + 1 + np.argmin(tramo_posterior)
+            )
+        nivel_inferior = float(y_original[indice_inferior_original])
         peso_sin_calibrar = nivel_superior - nivel_inferior
         if not np.isfinite(peso_sin_calibrar) or peso_sin_calibrar <= 0:
             raise ValueError("PESO_MANUAL_EQUIVALENTE_NO_POSITIVO")
@@ -402,12 +441,12 @@ def estimar_horizontales_experimentales_peso(
         nivel_superior = float(centro + 0.5 * peso)
         nivel_inferior = float(centro - 0.5 * peso)
 
-        carga_al_giro = float(y_desc[0])
+        carga_al_giro = float(y_original[indice_superior_original])
         transferencia_derecha = bool(
             nivel_superior - carga_al_giro > 0.15 * peso_sin_calibrar
         )
         metodo = (
-            "CODOS_CINEMATICOS_CALIBRADOS_ECH277_"
+            "HOMBROS_POSICION_CALIBRADOS_ECH277_"
             + (
                 "CON_TRANSFERENCIA_DERECHA"
                 if transferencia_derecha
@@ -425,7 +464,7 @@ def estimar_horizontales_experimentales_peso(
             "Peso_Fluido_Experimental_lbf": float(peso),
             "Metodo_Peso_Experimental": metodo,
             "Transferencia_Derecha_Peso_Detectada": transferencia_derecha,
-            "Indice_Codo_Superior_Peso": indice_superior_rama,
+            "Indice_Codo_Superior_Peso": indice_superior_original,
             "Indice_Codo_Inferior_Peso": indice_inferior_original,
         })
     except Exception as error:
