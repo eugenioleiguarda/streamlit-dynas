@@ -164,10 +164,7 @@ def calcular_sumergencia_desde_horizontales(
 # ubico manualmente los niveles en ValvulaMovil=18119 lbf y
 # ValvulaFija=12355 lbf: peso de fluido de referencia = 5764 lbf.
 PESO_MANUAL_REFERENCIA_ECH277_LBF = 5764.0
-# Con el criterio de hombros cinemáticos, la carta patrón entrega 6123 lbf
-# antes de calibrar: 5725 lbf en el último punto que todavía avanza hacia
-# la derecha y -398 lbf en el primer mínimo local de posición a la izquierda.
-PESO_SIN_CALIBRAR_REFERENCIA_ECH277_LBF = 6123.0
+PESO_SIN_CALIBRAR_REFERENCIA_ECH277_LBF = 6415.0
 FACTOR_CALIBRACION_PESO_MANUAL = (
     PESO_MANUAL_REFERENCIA_ECH277_LBF
     / PESO_SIN_CALIBRAR_REFERENCIA_ECH277_LBF
@@ -311,13 +308,13 @@ def estimar_horizontales_experimentales_peso(
     posicion=None,
     carga=None,
 ):
-    """Estima el peso con los hombros cinemáticos de la carta real.
+    """Estima el peso con hombros en el orden original de adquisicion.
 
-    Es independiente de la carta ideal, el llenado y los diagnósticos. En la
-    derecha toma la última muestra que todavía avanza antes de alcanzar la
-    posición máxima. En la izquierda toma el primer mínimo local que termina
-    el desplazamiento hacia la izquierda; si no existe un lazo dinámico,
-    toma la muestra inmediatamente anterior a la meseta del extremo.
+    Es independiente de la carta ideal, el llenado y los diagnosticos. El
+    hombro superior se busca antes del inicio descendente y el inferior
+    inmediatamente antes del inicio ascendente. Las ventanas robustas evitan
+    que una transferencia extendida por compresion o un golpe de fluido
+    desplacen los niveles hacia los extremos geometricos.
     """
     salida = {
         "Calculo_Peso_Experimental_Valido": False,
@@ -349,84 +346,115 @@ def estimar_horizontales_experimentales_peso(
         if len(x_original) < 10:
             raise ValueError("SECUENCIA_ORIGINAL_INSUFICIENTE")
 
-        x_min = float(np.min(x_original))
-        x_max = float(np.max(x_original))
+        x_asc = np.asarray(ascendente["posicion"], dtype=float)
+        y_asc = np.asarray(ascendente["carga"], dtype=float)
+        x_desc = np.asarray(descendente["posicion"], dtype=float)
+        y_desc = np.asarray(descendente["carga"], dtype=float)
+        validos_asc = np.isfinite(x_asc) & np.isfinite(y_asc)
+        validos_desc = np.isfinite(x_desc) & np.isfinite(y_desc)
+        x_asc, y_asc = x_asc[validos_asc], y_asc[validos_asc]
+        x_desc, y_desc = x_desc[validos_desc], y_desc[validos_desc]
+        if min(len(x_asc), len(x_desc)) < 5:
+            raise ValueError("RAMAS_INSUFICIENTES")
+
+        x_min = float(min(np.min(x_asc), np.min(x_desc)))
+        x_max = float(max(np.max(x_asc), np.max(x_desc)))
         rango_x = x_max - x_min
         if rango_x <= 1e-9:
             raise ValueError("RECORRIDO_NULO")
 
-        dx = np.diff(x_original)
-        tolerancia_movimiento = max(0.0025 * rango_x, 1e-9)
-        tolerancia_extremo = max(0.015 * rango_x, tolerancia_movimiento)
+        # Hombro superior: primer punto de la descendente que abandona de
+        # forma efectiva la posicion maxima. No se usa la meseta alta de la
+        # ascendente, que en compresion puede quedar muy por encima del giro.
+        tolerancia_x = max(0.005 * rango_x, 1e-9)
+        indices_salida_maximo = np.flatnonzero(
+            x_desc < (x_max - tolerancia_x)
+        )
+        if len(indices_salida_maximo) == 0:
+            raise ValueError("HOMBRO_SUPERIOR_NO_ENCONTRADO")
+        indice_superior_rama = int(indices_salida_maximo[0])
+        nivel_superior = float(y_desc[indice_superior_rama])
 
-        # Derecha: detecta la llegada al máximo y conserva el último punto
-        # que todavía avanzaba. De ese modo no usa la carga de la posterior
-        # transferencia vertical/redondeada.
-        candidatos_derecha = []
-        for indice in range(1, len(dx)):
-            llego_al_extremo = (
-                x_original[indice] >= x_max - tolerancia_extremo
-            )
-            venia_avanzando = dx[indice - 1] > tolerancia_movimiento
-            dejo_de_avanzar = dx[indice] <= tolerancia_movimiento
-            if llego_al_extremo and venia_avanzando and dejo_de_avanzar:
-                candidatos_derecha.append(indice)
-        if candidatos_derecha:
-            # ``indice`` ya es la primera muestra posterior a la llegada:
-            # el hombro pedido es la muestra inmediatamente anterior.
-            indice_superior_original = max(
-                0,
-                int(candidatos_derecha[0]) - 1,
-            )
-        else:
-            indice_maximo = int(np.argmax(x_original))
-            indice_superior_original = max(0, indice_maximo - 1)
-        nivel_superior = float(y_original[indice_superior_original])
+        rango_y = max(float(np.ptp(y_original)), 1e-9)
 
-        # Izquierda: después del hombro derecho se busca primero una
-        # inversión real izquierda->derecha (pequeño lazo dinámico). Cuando
-        # la posición queda estacionaria en el extremo, se usa la última
-        # muestra que todavía avanzaba hacia la izquierda.
-        indice_inferior_original = None
-        inicio_busqueda = min(indice_superior_original + 1, len(dx) - 1)
-        for indice in range(max(1, inicio_busqueda), len(dx)):
-            cerca_izquierda = (
-                x_original[indice] <= x_min + 0.20 * rango_x
-            )
-            invierte = (
-                dx[indice - 1] < -tolerancia_movimiento
-                and dx[indice] > tolerancia_movimiento
-            )
-            if cerca_izquierda and invierte:
-                indice_inferior_original = int(indice)
-                break
-        if indice_inferior_original is None:
-            for indice in range(max(1, inicio_busqueda), len(dx)):
-                cerca_izquierda = (
-                    x_original[indice] <= x_min + tolerancia_extremo
-                )
-                venia_hacia_izquierda = (
-                    dx[indice - 1] < -tolerancia_movimiento
-                )
-                dejo_de_avanzar = abs(dx[indice]) <= tolerancia_movimiento
-                if (
-                    cerca_izquierda
-                    and venia_hacia_izquierda
-                    and dejo_de_avanzar
-                ):
-                    # En una detención (sin inversión de sentido), el
-                    # hombro es el último punto que todavía avanzaba hacia
-                    # la izquierda, no la primera muestra estacionaria.
-                    indice_inferior_original = max(0, int(indice) - 1)
+        # Hombro inferior en el giro izquierdo. La banda corta evita tomar el
+        # valle central de cartas con compresion.
+        indices_banda_izquierda = np.flatnonzero(
+            x_desc <= (x_min + 0.10 * rango_x)
+        )
+        if len(indices_banda_izquierda) == 0:
+            raise ValueError("HOMBRO_INFERIOR_NO_ENCONTRADO")
+        indice_inferior_rama = int(indices_banda_izquierda[
+            np.argmin(y_desc[indices_banda_izquierda])
+        ])
+
+        # Golpe de bomba: si el giro sigue cayendo con una pendiente mucho
+        # mayor que la tendencia previa, se conserva el hombro anterior al
+        # impacto y no el minimo terminal.
+        indices_banda_impacto = np.flatnonzero(
+            x_desc <= (x_min + 0.25 * rango_x)
+        )
+        pendientes_caida = []
+        for indice in indices_banda_impacto[:-1]:
+            siguiente = indice + 1
+            avance_izquierda = x_desc[indice] - x_desc[siguiente]
+            if avance_izquierda > 0:
+                pendientes_caida.append((
+                    int(indice),
+                    (y_desc[indice] - y_desc[siguiente])
+                    / avance_izquierda,
+                ))
+        indice_minimo_banda_impacto = int(indices_banda_impacto[
+            np.argmin(y_desc[indices_banda_impacto])
+        ])
+        minimo_en_extremo = bool(
+            x_desc[indice_minimo_banda_impacto]
+            <= x_min + 0.03 * rango_x
+        )
+        if len(pendientes_caida) >= 5 and minimo_en_extremo:
+            mitad = max(3, len(pendientes_caida) // 2)
+            pendiente_base = float(np.nanmedian([
+                valor for _, valor in pendientes_caida[:mitad]
+            ]))
+            umbral_impacto = max(90.0, 2.2 * max(pendiente_base, 1.0))
+            for indice, pendiente in pendientes_caida:
+                if pendiente > umbral_impacto:
+                    indice_inferior_rama = min(
+                        indice_inferior_rama,
+                        int(indice),
+                    )
                     break
-        if indice_inferior_original is None:
-            tramo_posterior = x_original[indice_superior_original + 1:]
-            if len(tramo_posterior) == 0:
-                raise ValueError("HOMBRO_INFERIOR_NO_ENCONTRADO")
-            indice_inferior_original = int(
-                indice_superior_original + 1 + np.argmin(tramo_posterior)
-            )
-        nivel_inferior = float(y_original[indice_inferior_original])
+
+        nivel_inferior = float(y_desc[indice_inferior_rama])
+        indice_inferior_original = indice_inferior_rama
+
+        # Si la apertura obtenida es demasiado pequena respecto de la propia
+        # altura de la carta, la transferencia comenzo antes del maximo de
+        # posicion. Se retrocede por la ascendente hasta el inicio de la caida
+        # sostenida y se usa ese hombro superior.
+        apertura_preliminar = nivel_superior - nivel_inferior
+        if apertura_preliminar < 0.25 * rango_y:
+            pendientes_descarga = []
+            for indice in range(1, len(x_asc)):
+                avance = x_asc[indice] - x_asc[indice - 1]
+                if avance <= 0:
+                    pendientes_descarga.append(np.nan)
+                    continue
+                pendientes_descarga.append(
+                    -(y_asc[indice] - y_asc[indice - 1])
+                    / avance * rango_x / rango_y
+                )
+            inicio_busqueda = max(1, int(0.55 * len(x_asc)))
+            for indice in range(inicio_busqueda, len(x_asc) - 2):
+                ventana = np.asarray(
+                    pendientes_descarga[indice - 1:indice + 2],
+                    dtype=float,
+                )
+                if np.count_nonzero(ventana >= 0.65) >= 2:
+                    indice_superior_rama = int(indice - 1)
+                    nivel_superior = float(y_asc[indice_superior_rama])
+                    break
+
         peso_sin_calibrar = nivel_superior - nivel_inferior
         if not np.isfinite(peso_sin_calibrar) or peso_sin_calibrar <= 0:
             raise ValueError("PESO_MANUAL_EQUIVALENTE_NO_POSITIVO")
@@ -441,12 +469,12 @@ def estimar_horizontales_experimentales_peso(
         nivel_superior = float(centro + 0.5 * peso)
         nivel_inferior = float(centro - 0.5 * peso)
 
-        carga_al_giro = float(y_original[indice_superior_original])
+        carga_al_giro = float(y_desc[0])
         transferencia_derecha = bool(
             nivel_superior - carga_al_giro > 0.15 * peso_sin_calibrar
         )
         metodo = (
-            "HOMBROS_POSICION_CALIBRADOS_ECH277_"
+            "CODOS_CINEMATICOS_CALIBRADOS_ECH277_"
             + (
                 "CON_TRANSFERENCIA_DERECHA"
                 if transferencia_derecha
@@ -464,245 +492,11 @@ def estimar_horizontales_experimentales_peso(
             "Peso_Fluido_Experimental_lbf": float(peso),
             "Metodo_Peso_Experimental": metodo,
             "Transferencia_Derecha_Peso_Detectada": transferencia_derecha,
-            "Indice_Codo_Superior_Peso": indice_superior_original,
+            "Indice_Codo_Superior_Peso": indice_superior_rama,
             "Indice_Codo_Inferior_Peso": indice_inferior_original,
         })
     except Exception as error:
         salida["Motivo_Peso_Experimental_No_Valido"] = str(error)
-    return salida
-
-
-def _ajustar_tramo_cuasistatico(x, y, rango_x, rango_y):
-    """Ajuste lineal robusto y auditable de un tramo de una rama."""
-    x = np.asarray(x, dtype=float)
-    y = np.asarray(y, dtype=float)
-    mascara = np.isfinite(x) & np.isfinite(y)
-    x = x[mascara]
-    y = y[mascara]
-    if len(x) < 5 or np.ptp(x) <= 0:
-        return None
-
-    mascara_robusta = np.ones(len(x), dtype=bool)
-    for _ in range(3):
-        if mascara_robusta.sum() < 5:
-            return None
-        pendiente, intercepto = np.polyfit(
-            x[mascara_robusta], y[mascara_robusta], 1
-        )
-        residuos = y - (pendiente * x + intercepto)
-        mediana = float(np.median(residuos[mascara_robusta]))
-        mad = float(
-            np.median(
-                np.abs(residuos[mascara_robusta] - mediana)
-            )
-        )
-        escala = max(1.4826 * mad, 0.005 * rango_y, 1e-9)
-        nueva = np.abs(residuos - mediana) <= 3.0 * escala
-        if np.array_equal(nueva, mascara_robusta):
-            break
-        mascara_robusta = nueva
-
-    if mascara_robusta.sum() < 5:
-        return None
-    pendiente, intercepto = np.polyfit(
-        x[mascara_robusta], y[mascara_robusta], 1
-    )
-    residuos = y[mascara_robusta] - (
-        pendiente * x[mascara_robusta] + intercepto
-    )
-    mad = float(np.median(np.abs(residuos - np.median(residuos))))
-    extension = float(np.ptp(x[mascara_robusta]))
-    pendiente_relativa = float(
-        abs(pendiente) * max(rango_x, 1e-9) / max(rango_y, 1e-9)
-    )
-    dispersion_relativa = float(mad / max(rango_y, 1e-9))
-    return {
-        "pendiente": float(pendiente),
-        "intercepto": float(intercepto),
-        "mad": mad,
-        "extension": extension,
-        "extension_relativa": float(extension / max(rango_x, 1e-9)),
-        "pendiente_relativa": pendiente_relativa,
-        "dispersion_relativa": dispersion_relativa,
-        "x_inicio": float(np.min(x[mascara_robusta])),
-        "x_fin": float(np.max(x[mascara_robusta])),
-        "n": int(mascara_robusta.sum()),
-    }
-
-
-def _seleccionar_tramo_cuasistatico(x, y, rango_x, rango_y):
-    """Busca una ventana central, persistente, plana y poco dispersa."""
-    x = np.asarray(x, dtype=float)
-    y = np.asarray(y, dtype=float)
-    mascara = np.isfinite(x) & np.isfinite(y)
-    x = x[mascara]
-    y = y[mascara]
-    if len(x) < 8:
-        return None
-
-    orden = np.argsort(x)
-    x = x[orden]
-    y = y[orden]
-    x_min_global = float(np.min(x))
-    candidatos = []
-    n = len(x)
-    minimo_puntos = max(5, int(np.ceil(0.12 * n)))
-    maximo_puntos = max(minimo_puntos, int(np.ceil(0.60 * n)))
-    for longitud in range(minimo_puntos, min(maximo_puntos, n) + 1):
-        for inicio in range(0, n - longitud + 1):
-            fin = inicio + longitud
-            ajuste = _ajustar_tramo_cuasistatico(
-                x[inicio:fin], y[inicio:fin], rango_x, rango_y
-            )
-            if ajuste is None or ajuste["extension_relativa"] < 0.15:
-                continue
-            centro_relativo = (
-                0.5 * (ajuste["x_inicio"] + ajuste["x_fin"])
-                - x_min_global
-            ) / max(rango_x, 1e-9)
-            if centro_relativo < 0.15 or centro_relativo > 0.85:
-                continue
-            penalizacion_borde = 0.35 * abs(centro_relativo - 0.50)
-            puntaje = (
-                ajuste["pendiente_relativa"]
-                + 3.0 * ajuste["dispersion_relativa"]
-                + penalizacion_borde
-                - 0.20 * ajuste["extension_relativa"]
-            )
-            ajuste["puntaje"] = float(puntaje)
-            candidatos.append(ajuste)
-    if not candidatos:
-        return None
-    return min(candidatos, key=lambda valor: valor["puntaje"])
-
-
-def estimar_peso_fluido_cuasistatico(
-    ascendente,
-    descendente,
-    horizontales_validas=True,
-):
-    """Estima la apertura cuasiestatica sin alterar carta ni diagnosticos."""
-    salida = {
-        "Calculo_Peso_Cuasistatico_Valido": False,
-        "Motivo_Peso_Cuasistatico_No_Valido": "NO_EVALUADO",
-        "Carga_Superior_Cuasistatica_lbf": np.nan,
-        "Carga_Inferior_Cuasistatica_lbf": np.nan,
-        "Peso_Fluido_Observado_lbf": np.nan,
-        "Correccion_Friccion_lbf": np.nan,
-        "Peso_Fluido_Cuasistatico_lbf": np.nan,
-        "Ventana_Superior_Inicio_pulg": np.nan,
-        "Ventana_Superior_Fin_pulg": np.nan,
-        "Ventana_Inferior_Inicio_pulg": np.nan,
-        "Ventana_Inferior_Fin_pulg": np.nan,
-        "Referencia_X_Peso_Cuasistatico_pulg": np.nan,
-        "Confianza_Peso_Cuasistatico": 0.0,
-        "Metodo_Peso_Cuasistatico": "NO_ESTIMABLE",
-        "Evidencia_Friccion_Peso_Cuasistatico": (
-            "NO_IDENTIFICABLE_CARTA_UNICA"
-        ),
-    }
-    try:
-        if not horizontales_validas:
-            raise ValueError("HORIZONTALES_BASE_NO_VALIDAS")
-        xa = np.asarray(ascendente["posicion"], dtype=float)
-        ya = np.asarray(ascendente["carga"], dtype=float)
-        xd = np.asarray(descendente["posicion"], dtype=float)
-        yd = np.asarray(descendente["carga"], dtype=float)
-        x_todo = np.concatenate([xa, xd])
-        y_todo = np.concatenate([ya, yd])
-        rango_x = float(np.ptp(x_todo))
-        rango_y = float(np.ptp(y_todo))
-        if rango_x <= 0 or rango_y <= 0:
-            raise ValueError("RANGO_CARTA_NO_POSITIVO")
-
-        tramo_a = _seleccionar_tramo_cuasistatico(
-            xa, ya, rango_x, rango_y
-        )
-        tramo_d = _seleccionar_tramo_cuasistatico(
-            xd, yd, rango_x, rango_y
-        )
-        if tramo_a is None or tramo_d is None:
-            raise ValueError("SIN_VENTANAS_CUASIESTATICAS_PERSISTENTES")
-
-        inicio_solape = max(tramo_a["x_inicio"], tramo_d["x_inicio"])
-        fin_solape = min(tramo_a["x_fin"], tramo_d["x_fin"])
-        extension_solape = fin_solape - inicio_solape
-        if extension_solape < 0.05 * rango_x:
-            raise ValueError("VENTANAS_SIN_SOLAPE_SUFICIENTE")
-        x_ref = float(0.5 * (inicio_solape + fin_solape))
-        carga_a = float(
-            tramo_a["pendiente"] * x_ref + tramo_a["intercepto"]
-        )
-        carga_d = float(
-            tramo_d["pendiente"] * x_ref + tramo_d["intercepto"]
-        )
-        superior = max(carga_a, carga_d)
-        inferior = min(carga_a, carga_d)
-        peso_observado = float(superior - inferior)
-        if not np.isfinite(peso_observado) or peso_observado <= 0:
-            raise ValueError("APERTURA_CUASIESTATICA_NO_POSITIVA")
-
-        calidad_pendiente = max(
-            tramo_a["pendiente_relativa"],
-            tramo_d["pendiente_relativa"],
-        )
-        calidad_dispersion = max(
-            tramo_a["dispersion_relativa"],
-            tramo_d["dispersion_relativa"],
-        )
-        persistencia = min(
-            tramo_a["extension_relativa"],
-            tramo_d["extension_relativa"],
-        )
-        solape_relativo = float(extension_solape / rango_x)
-        confianza = float(
-            np.clip(
-                1.0
-                - 1.8 * calidad_pendiente
-                - 6.0 * calidad_dispersion
-                + 0.35 * min(persistencia / 0.30, 1.0)
-                + 0.20 * min(solape_relativo / 0.20, 1.0),
-                0.0,
-                1.0,
-            )
-        )
-        if confianza < 0.35:
-            raise ValueError("BAJA_CONFIANZA_CUASIESTATICA")
-
-        salida.update({
-            "Calculo_Peso_Cuasistatico_Valido": True,
-            "Motivo_Peso_Cuasistatico_No_Valido": "",
-            "Carga_Superior_Cuasistatica_lbf": superior,
-            "Carga_Inferior_Cuasistatica_lbf": inferior,
-            "Peso_Fluido_Observado_lbf": peso_observado,
-            # La carta individual no permite separar de forma unica la
-            # friccion de otros efectos. No se fuerza una correccion falsa.
-            "Correccion_Friccion_lbf": 0.0,
-            "Peso_Fluido_Cuasistatico_lbf": peso_observado,
-            "Ventana_Superior_Inicio_pulg": (
-                tramo_a["x_inicio"] if carga_a >= carga_d
-                else tramo_d["x_inicio"]
-            ),
-            "Ventana_Superior_Fin_pulg": (
-                tramo_a["x_fin"] if carga_a >= carga_d
-                else tramo_d["x_fin"]
-            ),
-            "Ventana_Inferior_Inicio_pulg": (
-                tramo_d["x_inicio"] if carga_a >= carga_d
-                else tramo_a["x_inicio"]
-            ),
-            "Ventana_Inferior_Fin_pulg": (
-                tramo_d["x_fin"] if carga_a >= carga_d
-                else tramo_a["x_fin"]
-            ),
-            "Referencia_X_Peso_Cuasistatico_pulg": x_ref,
-            "Confianza_Peso_Cuasistatico": confianza,
-            "Metodo_Peso_Cuasistatico": (
-                "VENTANAS_ROBUSTAS_CENTRALES_SOLAPADAS"
-            ),
-        })
-    except Exception as error:
-        salida["Motivo_Peso_Cuasistatico_No_Valido"] = str(error)
     return salida
 
 
@@ -3507,60 +3301,6 @@ def procesar_json(origen, silencioso=True):
                     ]
                 ),
             }
-
-            # Estimacion cuasiestatica independiente, destinada solo a
-            # validar peso de fluido y sumergencia. No interviene en los
-            # diagnosticos ni reemplaza la carta ideal.
-            peso_cuasistatico = estimar_peso_fluido_cuasistatico(
-                ascendente=asc,
-                descendente=desc,
-                horizontales_validas=bool(
-                    calidad["confiables"] and integridad["valida"]
-                ),
-            )
-            sumergencia_cuasistatica_base = (
-                calcular_sumergencia_desde_horizontales(
-                    carga_superior_lbf=peso_cuasistatico[
-                        "Carga_Superior_Cuasistatica_lbf"
-                    ],
-                    carga_inferior_lbf=peso_cuasistatico[
-                        "Carga_Inferior_Cuasistatica_lbf"
-                    ],
-                    profundidad_bomba_m=profundidad_bomba_m,
-                    diametro_piston_pulg=diametro_piston_pulg,
-                    sg_fluido=GRAVEDAD_ESPECIFICA_REFERENCIA,
-                    horizontales_validas=peso_cuasistatico[
-                        "Calculo_Peso_Cuasistatico_Valido"
-                    ],
-                )
-            )
-            sumergencia_cuasistatica = {
-                "Calculo_Sumergencia_Cuasistatica_Valido": (
-                    sumergencia_cuasistatica_base[
-                        "Calculo_Sumergencia_Propia_Valido"
-                    ]
-                ),
-                "Motivo_Sumergencia_Cuasistatica_No_Valida": (
-                    sumergencia_cuasistatica_base[
-                        "Motivo_Sumergencia_Propia_No_Valida"
-                    ]
-                ),
-                "Sumergencia_Cuasistatica_m": (
-                    sumergencia_cuasistatica_base[
-                        "Sumergencia_Sobre_Bomba_m"
-                    ]
-                ),
-                "Nivel_Dinamico_Cuasistatico_m": (
-                    sumergencia_cuasistatica_base[
-                        "Nivel_Dinamico_Propio_m"
-                    ]
-                ),
-                "Sumergencia_Relativa_Cuasistatica_pct": (
-                    sumergencia_cuasistatica_base[
-                        "Sumergencia_Relativa_Propia_pct"
-                    ]
-                ),
-            }
             resultados.append({
                 "CartaId": carta_id, "Pozo": carta["Pozo"], "Fecha": carta["Fecha"],
                 "GPM": pd.to_numeric(carta.get("GPM"), errors="coerce"),
@@ -3719,8 +3459,6 @@ def procesar_json(origen, silencioso=True):
                 **sumergencia_propia,
                 **horizontales_peso_experimental,
                 **sumergencia_peso_experimental,
-                **peso_cuasistatico,
-                **sumergencia_cuasistatica,
                 "Area_Real": area_poligono(posicion, carga), "Area_Ideal": area_ideal,
                 "Llenado_Calculado_pct": llenado_calculado,
                 "Llenado_API_pct": llenado_api,
@@ -7955,64 +7693,6 @@ def procesar_json(origen, silencioso=True):
                     "Sumergencia_Relativa_Peso_Experimental_pct",
                     np.nan,
                 ),
-            "Calculo_Peso_Cuasistatico_Valido": bool(
-                resultado.get("Calculo_Peso_Cuasistatico_Valido", False)
-            ),
-            "Motivo_Peso_Cuasistatico_No_Valido": resultado.get(
-                "Motivo_Peso_Cuasistatico_No_Valido", ""
-            ),
-            "Carga_Superior_Cuasistatica_lbf": resultado.get(
-                "Carga_Superior_Cuasistatica_lbf", np.nan
-            ),
-            "Carga_Inferior_Cuasistatica_lbf": resultado.get(
-                "Carga_Inferior_Cuasistatica_lbf", np.nan
-            ),
-            "Peso_Fluido_Observado_lbf": resultado.get(
-                "Peso_Fluido_Observado_lbf", np.nan
-            ),
-            "Correccion_Friccion_lbf": resultado.get(
-                "Correccion_Friccion_lbf", np.nan
-            ),
-            "Peso_Fluido_Cuasistatico_lbf": resultado.get(
-                "Peso_Fluido_Cuasistatico_lbf", np.nan
-            ),
-            "Ventana_Superior_Inicio_pulg": resultado.get(
-                "Ventana_Superior_Inicio_pulg", np.nan
-            ),
-            "Ventana_Superior_Fin_pulg": resultado.get(
-                "Ventana_Superior_Fin_pulg", np.nan
-            ),
-            "Ventana_Inferior_Inicio_pulg": resultado.get(
-                "Ventana_Inferior_Inicio_pulg", np.nan
-            ),
-            "Ventana_Inferior_Fin_pulg": resultado.get(
-                "Ventana_Inferior_Fin_pulg", np.nan
-            ),
-            "Confianza_Peso_Cuasistatico": resultado.get(
-                "Confianza_Peso_Cuasistatico", np.nan
-            ),
-            "Metodo_Peso_Cuasistatico": resultado.get(
-                "Metodo_Peso_Cuasistatico", "NO_ESTIMABLE"
-            ),
-            "Evidencia_Friccion_Peso_Cuasistatico": bool(
-                resultado.get(
-                    "Evidencia_Friccion_Peso_Cuasistatico", False
-                )
-            ),
-            "Calculo_Sumergencia_Cuasistatica_Valido": bool(
-                resultado.get(
-                    "Calculo_Sumergencia_Cuasistatica_Valido", False
-                )
-            ),
-            "Sumergencia_Cuasistatica_m": resultado.get(
-                "Sumergencia_Cuasistatica_m", np.nan
-            ),
-            "Nivel_Dinamico_Cuasistatico_m": resultado.get(
-                "Nivel_Dinamico_Cuasistatico_m", np.nan
-            ),
-            "Sumergencia_Relativa_Cuasistatica_pct": resultado.get(
-                "Sumergencia_Relativa_Cuasistatica_pct", np.nan
-            ),
             "Carga_Hidraulica_Efectiva_Peso_Experimental_lbf":
                 resultado.get(
                     "Carga_Hidraulica_Efectiva_Peso_Experimental_lbf",
@@ -8122,13 +7802,6 @@ def procesar_json(origen, silencioso=True):
             "Delta_Sumergencia_Peso_Experimental_vs_API_m": (
                 resultado.get(
                     "Sumergencia_Peso_Experimental_m",
-                    np.nan,
-                )
-                - resultado.get("Sumergencia_API_m", np.nan)
-            ),
-            "Delta_Sumergencia_Cuasistatica_vs_API_m": (
-                resultado.get(
-                    "Sumergencia_Cuasistatica_m",
                     np.nan,
                 )
                 - resultado.get("Sumergencia_API_m", np.nan)

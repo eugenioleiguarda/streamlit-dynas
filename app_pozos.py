@@ -46,7 +46,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-13-hombros-descendente-peso-v43"
+    "2026-08-13-hombros-descendente-impacto-peso-v44"
 )
 
 COLORES = {
