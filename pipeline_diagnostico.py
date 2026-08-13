@@ -164,7 +164,7 @@ def calcular_sumergencia_desde_horizontales(
 # ubico manualmente los niveles en ValvulaMovil=18119 lbf y
 # ValvulaFija=12355 lbf: peso de fluido de referencia = 5764 lbf.
 PESO_MANUAL_REFERENCIA_ECH277_LBF = 5764.0
-PESO_SIN_CALIBRAR_REFERENCIA_ECH277_LBF = 6525.192875
+PESO_SIN_CALIBRAR_REFERENCIA_ECH277_LBF = 7074.0
 FACTOR_CALIBRACION_PESO_MANUAL = (
     PESO_MANUAL_REFERENCIA_ECH277_LBF
     / PESO_SIN_CALIBRAR_REFERENCIA_ECH277_LBF
@@ -305,15 +305,16 @@ def estimar_horizontales_experimentales_peso(
     ascendente,
     descendente,
     horizontales_validas,
+    posicion=None,
+    carga=None,
 ):
-    """Estima niveles manuales equivalentes para peso de fluido.
+    """Estima el peso con hombros en el orden original de adquisicion.
 
-    Es un calculo independiente de la carta ideal y de los diagnosticos. La
-    logica imita la seleccion visual del especialista: descarta las
-    transferencias laterales, busca el intervalo interior donde ambas ramas
-    permanecen separadas y persistentes, y coloca cada nivel sobre el hombro
-    interno de su rama. Los niveles no tienen que atravesar puntos reales ni
-    se fuerzan a ser simetricos.
+    Es independiente de la carta ideal, el llenado y los diagnosticos. El
+    hombro superior se busca antes del inicio descendente y el inferior
+    inmediatamente antes del inicio ascendente. Las ventanas robustas evitan
+    que una transferencia extendida por compresion o un golpe de fluido
+    desplacen los niveles hacia los extremos geometricos.
     """
     salida = {
         "Calculo_Peso_Experimental_Valido": False,
@@ -327,6 +328,8 @@ def estimar_horizontales_experimentales_peso(
         ),
         "Metodo_Peso_Experimental": "NO_ESTIMABLE",
         "Transferencia_Derecha_Peso_Detectada": False,
+        "Indice_Codo_Superior_Peso": np.nan,
+        "Indice_Codo_Inferior_Peso": np.nan,
     }
     if not bool(horizontales_validas):
         salida["Motivo_Peso_Experimental_No_Valido"] = (
@@ -335,6 +338,14 @@ def estimar_horizontales_experimentales_peso(
         return salida
 
     try:
+        x_original = np.asarray(posicion, dtype=float)
+        y_original = np.asarray(carga, dtype=float)
+        validos_original = np.isfinite(x_original) & np.isfinite(y_original)
+        x_original = x_original[validos_original]
+        y_original = y_original[validos_original]
+        if len(x_original) < 10:
+            raise ValueError("SECUENCIA_ORIGINAL_INSUFICIENTE")
+
         x_asc = np.asarray(ascendente["posicion"], dtype=float)
         y_asc = np.asarray(ascendente["carga"], dtype=float)
         x_desc = np.asarray(descendente["posicion"], dtype=float)
@@ -352,101 +363,34 @@ def estimar_horizontales_experimentales_peso(
         if rango_x <= 1e-9:
             raise ValueError("RECORRIDO_NULO")
 
-        def interpolar(rama_x, rama_y, grilla_u):
-            tabla = pd.DataFrame({"x": rama_x, "y": rama_y})
-            tabla = (
-                tabla.groupby("x", as_index=False)["y"]
-                .median()
-                .sort_values("x")
-            )
-            if len(tabla) < 4:
-                raise ValueError("RAMA_NO_INTERPOLABLE")
-            valores = np.interp(
-                x_min + rango_x * grilla_u,
-                tabla["x"].to_numpy(dtype=float),
-                tabla["y"].to_numpy(dtype=float),
-            )
-            return (
-                pd.Series(valores)
-                .rolling(5, center=True, min_periods=1)
-                .median()
-                .to_numpy(dtype=float)
-            )
-
-        grilla = np.linspace(0.04, 0.96, 161)
-        superior = interpolar(x_asc, y_asc, grilla)
-        inferior = interpolar(x_desc, y_desc, grilla)
-        separacion = superior - inferior
-        zona_central = (grilla >= 0.15) & (grilla <= 0.85)
-        separacion_central = separacion[
-            zona_central & np.isfinite(separacion) & (separacion > 0)
-        ]
-        if len(separacion_central) < 20:
-            raise ValueError("SEPARACION_INTERIOR_INSUFICIENTE")
-
-        # Una transferencia lateral se reconoce porque la apertura entre
-        # ramas aun no alcanzo (o ya perdio) una fraccion importante de la
-        # apertura interior. Se conserva el tramo continuo mas largo; asi el
-        # limite derecho se adelanta automaticamente en cartas con gas o
-        # golpe de fluido.
-        separacion_referencia = float(
-            np.nanquantile(separacion_central, 0.70)
+        # Hombro superior: nivel robusto de la rama cargada antes del giro.
+        # Se excluyen el levantamiento inicial y el propio extremo; de este
+        # modo una descarga anticipada por compresion no mueve la horizontal.
+        progreso_asc = (x_asc - x_min) / rango_x
+        indices_superiores = np.flatnonzero(
+            (progreso_asc >= 0.10) & (progreso_asc <= 0.88)
         )
-        abierta = (
-            np.isfinite(separacion)
-            & (separacion >= 0.62 * separacion_referencia)
-            & (grilla >= 0.06)
-            & (grilla <= 0.94)
-        )
-
-        indices = np.flatnonzero(abierta)
-        if len(indices) == 0:
-            raise ValueError("SIN_MESETA_PERSISTENTE")
-        cortes = np.flatnonzero(np.diff(indices) > 1) + 1
-        grupos = np.split(indices, cortes)
-        grupos = [g for g in grupos if len(g) >= 18]
-        if not grupos:
-            raise ValueError("MESETA_DEMASIADO_CORTA")
-        grupo = max(
-            grupos,
-            key=lambda g: (
-                float(grilla[g[-1]] - grilla[g[0]]),
-                -abs(float(np.mean(grilla[g])) - 0.50),
-            ),
-        )
-        inicio = int(grupo[0])
-        fin = int(grupo[-1])
-        if grilla[fin] - grilla[inicio] < 0.28:
-            raise ValueError("MESETA_SIN_EXTENSION_MINIMA")
-
-        # Se retira un pequeno margen para que los puntos donde comienza la
-        # transferencia no contaminen los niveles. Luego se resumen bloques
-        # de igual ancho: una nube densa en un extremo no pesa mas que el
-        # resto de la meseta.
-        margen = max(2, int(round(0.03 * len(grilla))))
-        inicio_neto = min(inicio + margen, fin)
-        fin_neto = max(fin - margen, inicio_neto)
-        if fin_neto - inicio_neto + 1 < 14:
-            raise ValueError("MESETA_NETA_INSUFICIENTE")
-
-        idx_neto = np.arange(inicio_neto, fin_neto + 1)
-        bloques = [b for b in np.array_split(idx_neto, 12) if len(b)]
-        medianas_superiores = np.asarray([
-            np.nanmedian(superior[b]) for b in bloques
-        ])
-        medianas_inferiores = np.asarray([
-            np.nanmedian(inferior[b]) for b in bloques
+        if len(indices_superiores) < 5:
+            raise ValueError("HOMBRO_SUPERIOR_NO_ENCONTRADO")
+        nivel_superior = float(np.nanquantile(
+            y_asc[indices_superiores], 0.75
+        ))
+        indice_superior_rama = int(indices_superiores[
+            np.argmin(abs(y_asc[indices_superiores] - nivel_superior))
         ])
 
-        # Criterio manual equivalente: borde inferior de la rama cargada y
-        # borde superior de la rama descargada. Son niveles sinteticos e
-        # independientes; deliberadamente no se recentran ni se simetrizan.
-        nivel_superior = float(
-            np.nanquantile(medianas_superiores, 0.10)
-        )
-        nivel_inferior = float(
-            np.nanquantile(medianas_inferiores, 0.90)
-        )
+        # Hombro inferior: adquisiciones inmediatamente anteriores al inicio
+        # ascendente. La mediana de cinco puntos rechaza impactos y evita que
+        # el ultimo punto, ya en transferencia, domine el nivel.
+        indice_min_original = int(np.argmin(x_original))
+        indices_inferiores = (
+            indice_min_original - np.arange(5, 0, -1)
+        ) % len(x_original)
+        cargas_inferiores = y_original[indices_inferiores]
+        nivel_inferior = float(np.nanmedian(cargas_inferiores))
+        indice_inferior_original = int(indices_inferiores[
+            np.argmin(abs(cargas_inferiores - nivel_inferior))
+        ])
         peso_sin_calibrar = nivel_superior - nivel_inferior
         if not np.isfinite(peso_sin_calibrar) or peso_sin_calibrar <= 0:
             raise ValueError("PESO_MANUAL_EQUIVALENTE_NO_POSITIVO")
@@ -461,9 +405,12 @@ def estimar_horizontales_experimentales_peso(
         nivel_superior = float(centro + 0.5 * peso)
         nivel_inferior = float(centro - 0.5 * peso)
 
-        transferencia_derecha = bool(grilla[fin] < 0.86)
+        carga_al_giro = float(y_asc[-1])
+        transferencia_derecha = bool(
+            nivel_superior - carga_al_giro > 0.15 * peso_sin_calibrar
+        )
         metodo = (
-            "HOMBROS_INDEPENDIENTES_ADAPTATIVOS_CALIBRADOS_ECH277_"
+            "CODOS_CINEMATICOS_CALIBRADOS_ECH277_"
             + (
                 "CON_TRANSFERENCIA_DERECHA"
                 if transferencia_derecha
@@ -481,6 +428,8 @@ def estimar_horizontales_experimentales_peso(
             "Peso_Fluido_Experimental_lbf": float(peso),
             "Metodo_Peso_Experimental": metodo,
             "Transferencia_Derecha_Peso_Detectada": transferencia_derecha,
+            "Indice_Codo_Superior_Peso": indice_superior_rama,
+            "Indice_Codo_Inferior_Peso": indice_inferior_original,
         })
     except Exception as error:
         salida["Motivo_Peso_Experimental_No_Valido"] = str(error)
@@ -3141,6 +3090,8 @@ def procesar_json(origen, silencioso=True):
                         calidad["confiables"]
                         and integridad["valida"]
                     ),
+                    posicion=posicion,
+                    carga=carga,
                 )
             )
 

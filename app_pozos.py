@@ -46,7 +46,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-13-carrera-geometrica-horizontales-peso-v41"
+    "2026-08-13-carrera-geometrica-horizontales-peso-v42"
 )
 
 COLORES = {
@@ -299,6 +299,29 @@ def construir_tabla_cartas(salida, produccion, controles):
         how="left",
         suffixes=("", "_API"),
     )
+
+    # La carrera geométrica propia es el recorrido total medido por la
+    # propia carta de fondo: máximo(PosicionesFondo) - mínimo(PosicionesFondo).
+    # Normalmente ya llega calculada desde el pipeline. Este respaldo evita
+    # que el campo quede vacío si se pierde durante la consolidación con los
+    # metadatos del JSON o si se procesa una salida antigua almacenada.
+    carrera_geometrica_desde_json = tabla.apply(
+        carrera_fondo_carta,
+        axis=1,
+    )
+    columna_carrera_geometrica = (
+        "Carrera_Geometrica_Fondo_Calculada_pulg"
+    )
+    if columna_carrera_geometrica not in tabla.columns:
+        tabla[columna_carrera_geometrica] = (
+            carrera_geometrica_desde_json
+        )
+    else:
+        tabla[columna_carrera_geometrica] = pd.to_numeric(
+            tabla[columna_carrera_geometrica],
+            errors="coerce",
+        ).fillna(carrera_geometrica_desde_json)
+
     tabla["Fecha"] = pd.to_datetime(tabla["Fecha"], errors="coerce")
     tabla["Fecha_Dia"] = tabla["Fecha"].dt.normalize()
 
@@ -352,6 +375,7 @@ def figura_carta(
     resultado,
     diagnostico,
     mostrar_horizontales_peso=False,
+    mostrar_carta_patrones=True,
 ):
     x = a_array(carta["Fondo_Posiciones"])
     y = a_array(carta["Fondo_Cargas"])
@@ -373,7 +397,11 @@ def figura_carta(
     carta_no_valida = bool(
         diagnostico.get("Carta_No_Valida", False)
     )
-    mostrar_carta_ideal = not sin_trabajo and not carta_no_valida
+    mostrar_carta_ideal = bool(
+        mostrar_carta_patrones
+        and not sin_trabajo
+        and not carta_no_valida
+    )
     vertices = (
         resultado.get("Vertices_Ideal")
         if resultado is not None and mostrar_carta_ideal
@@ -387,7 +415,7 @@ def figura_carta(
                 x=vertices[:, 0],
                 y=vertices[:, 1],
                 mode="lines",
-                name="Carta ideal",
+                name="Carta patrones de cálculo",
                 line=dict(color="#9063cd", width=3, dash="dash"),
             ))
     except Exception:
@@ -446,10 +474,16 @@ def figura_carta(
             font=dict(color=color, size=15),
         ),
         height=340,
-        margin=dict(l=35, r=20, t=72, b=35),
+        margin=dict(l=35, r=20, t=72, b=105),
         xaxis_title="Posición",
         yaxis_title="Carga",
-        legend=dict(orientation="h", y=1.02, x=1, xanchor="right"),
+        legend=dict(
+            orientation="h",
+            y=-0.22,
+            x=0,
+            xanchor="left",
+            yanchor="top",
+        ),
         template="plotly_white",
     )
     return fig
@@ -837,7 +871,16 @@ mostrar_horizontales_peso = st.sidebar.checkbox(
     value=False,
     help=(
         "Muestra las rectas ocultas usadas para estimar peso de fluido y "
-        "sumergencia. No modifica la carta ideal ni los diagnosticos."
+        "sumergencia. No modifica la carta patrones de cálculo ni los "
+        "diagnósticos."
+    ),
+)
+mostrar_carta_patrones = st.sidebar.checkbox(
+    "Mostrar carta patrones de cálculo",
+    value=True,
+    help=(
+        "Muestra u oculta la referencia geométrica usada por los cálculos. "
+        "Ocultarla no modifica el llenado ni los diagnósticos."
     ),
 )
 archivo_controles = st.sidebar.file_uploader(
@@ -1505,7 +1548,12 @@ with tab_explorador:
                             cartas_por_id[carta_id],
                             resultados_por_id.get(carta_id),
                             diag,
-                            mostrar_horizontales_peso,
+                            mostrar_horizontales_peso=(
+                                mostrar_horizontales_peso
+                            ),
+                            mostrar_carta_patrones=(
+                                mostrar_carta_patrones
+                            ),
                         ),
                         use_container_width=True,
                         key=f"explorador_{carta_id}_{pagina}",
@@ -1945,7 +1993,12 @@ no tenga más peso que otro. Todavía no se aplican umbrales diagnósticos.
                             cartas_por_id[carta_id],
                             resultados_por_id.get(carta_id),
                             diag,
-                            mostrar_horizontales_peso,
+                            mostrar_horizontales_peso=(
+                                mostrar_horizontales_peso
+                            ),
+                            mostrar_carta_patrones=(
+                                mostrar_carta_patrones
+                            ),
                         ),
                         use_container_width=True,
                         key=f"detalle_{pozo}_{carta_id}_{pagina_pozo}",
@@ -1967,7 +2020,7 @@ no tenga más peso que otro. Todavía no se aplican umbrales diagnósticos.
                         f"{valor_texto(diag.get('Peso_Fluido_API_lbf'), '.0f', ' lbf')} · "
                         f"manual equivalente: "
                         f"{valor_texto(diag.get('Peso_Fluido_Experimental_lbf'), '.0f', ' lbf')}  \n"
-                        f"SG usada: {valor_texto(diag.get('SG_Fluido_Peso_Experimental'), '.3f')} · "
+                        f"SG usada: {valor_texto(diag.get('SG_Fluido_Peso_Experimental'), '.4f')} · "
                         f"carga hidráulica corregida: "
                         f"{valor_texto(diag.get('Carga_Hidraulica_Efectiva_Peso_Experimental_lbf'), '.0f', ' lbf')}  \n"
                         f"Carrera geométrica propia: "
