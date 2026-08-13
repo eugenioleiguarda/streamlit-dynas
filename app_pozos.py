@@ -46,7 +46,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-13-peso-cuasistatico-v45"
+    "2026-08-13-hombros-descendente-peso-v43"
 )
 
 COLORES = {
@@ -425,18 +425,18 @@ def figura_carta(
     # peso de fluido y sumergencia. No participan del diagnostico de carta.
     if mostrar_horizontales_peso and resultado is not None:
         calculo_valido = bool(
-            resultado.get("Calculo_Peso_Cuasistatico_Valido", False)
+            resultado.get("Calculo_Peso_Experimental_Valido", False)
         )
         carga_superior_peso = pd.to_numeric(
             resultado.get(
-                "Carga_Superior_Cuasistatica_lbf",
+                "Carga_Superior_Peso_Experimental_lbf",
                 np.nan,
             ),
             errors="coerce",
         )
         carga_inferior_peso = pd.to_numeric(
             resultado.get(
-                "Carga_Inferior_Cuasistatica_lbf",
+                "Carga_Inferior_Peso_Experimental_lbf",
                 np.nan,
             ),
             errors="coerce",
@@ -445,30 +445,24 @@ def figura_carta(
             calculo_valido
             and np.isfinite(carga_superior_peso)
             and np.isfinite(carga_inferior_peso)
+            and len(x) > 0
         ):
-            segmentos = (
-                (
-                    "superior", carga_superior_peso,
-                    "Ventana_Superior_Inicio_pulg",
-                    "Ventana_Superior_Fin_pulg", "#f59e0b",
-                ),
-                (
-                    "inferior", carga_inferior_peso,
-                    "Ventana_Inferior_Inicio_pulg",
-                    "Ventana_Inferior_Fin_pulg", "#06b6d4",
-                ),
-            )
-            for nombre, carga_nivel, campo_inicio, campo_fin, color_nivel in segmentos:
-                inicio = pd.to_numeric(resultado.get(campo_inicio), errors="coerce")
-                fin = pd.to_numeric(resultado.get(campo_fin), errors="coerce")
-                if np.isfinite(inicio) and np.isfinite(fin) and fin > inicio:
-                    fig.add_trace(go.Scatter(
-                        x=[inicio, fin],
-                        y=[carga_nivel, carga_nivel],
-                        mode="lines",
-                        name=f"Tramo cuasiestático {nombre}",
-                        line=dict(color=color_nivel, width=3, dash="dot"),
-                    ))
+            x_min = float(np.nanmin(x))
+            x_max = float(np.nanmax(x))
+            fig.add_trace(go.Scatter(
+                x=[x_min, x_max],
+                y=[carga_superior_peso, carga_superior_peso],
+                mode="lines",
+                name="Peso fluido - superior",
+                line=dict(color="#f59e0b", width=2, dash="dot"),
+            ))
+            fig.add_trace(go.Scatter(
+                x=[x_min, x_max],
+                y=[carga_inferior_peso, carga_inferior_peso],
+                mode="lines",
+                name="Peso fluido - inferior",
+                line=dict(color="#06b6d4", width=2, dash="dot"),
+            ))
     fecha = pd.to_datetime(diagnostico.get("Fecha"), errors="coerce")
     fecha_texto = fecha.strftime("%d/%m/%Y %H:%M") if pd.notna(fecha) else ""
     fig.update_layout(
@@ -726,8 +720,8 @@ def construir_exportacion_cartas(cartas):
         "Sumergencia_Relativa_pct",
         "Sumergencia_API_m",
         "Sumergencia_Propia_m",
-        "Sumergencia_Relativa_Cuasistatica_pct",
-        "Delta_Sumergencia_Cuasistatica_vs_API_m",
+        "Sumergencia_Relativa_Peso_Experimental_pct",
+        "Delta_Sumergencia_Peso_Experimental_vs_API_m",
         "Calculo_Sumergencia_Propia_Valido",
         "Motivo_Sumergencia_Propia_No_Valida",
         "Peso_Fluido_Horizontales_lbf",
@@ -826,8 +820,8 @@ def construir_exportacion_pozos(cartas):
             "Sumergencia_Relativa_pct",
             "Sumergencia_API_m",
             "Sumergencia_Propia_m",
-            "Sumergencia_Relativa_Cuasistatica_pct",
-            "Delta_Sumergencia_Cuasistatica_vs_API_m",
+            "Sumergencia_Relativa_Peso_Experimental_pct",
+            "Delta_Sumergencia_Peso_Experimental_vs_API_m",
             "Torque_Reductor_pct",
             "Carga_Estructural_pct",
             "VFM_Bruta_m3_d",
@@ -1100,10 +1094,10 @@ with tab_resumen:
     )
     c4.metric("Pozos con variación", variables)
 
-    st.subheader("Comparación de peso de fluido — estimación cuasiestática")
+    st.subheader("Comparación de peso de fluido — criterio manual equivalente")
     st.caption(
         "Compara directamente PesoFluido informado por la API con la "
-        "separación entre los niveles cuasiestáticos estimados. "
+        "separación de las horizontales ocultas del método manual equivalente. "
         "El método fue calibrado con la carta ECh-277 del 12/08/2026 15:55 "
         "para reproducir 5764 lbf. Esta comparación no usa "
         "diámetro de pistón, profundidad, densidad ni presiones y, por lo "
@@ -1125,7 +1119,7 @@ with tab_resumen:
     )
     peso_horizontales = pd.to_numeric(
         comparacion_peso.get(
-            "Peso_Fluido_Cuasistatico_lbf",
+            "Peso_Fluido_Experimental_lbf",
             pd.Series(np.nan, index=comparacion_peso.index),
         ),
         errors="coerce",
@@ -1226,7 +1220,7 @@ with tab_resumen:
         ))
         fig_peso.update_layout(
             xaxis_title="Peso de fluido API [lbf]",
-            yaxis_title="Peso cuasiestático estimado [lbf]",
+            yaxis_title="Peso por criterio manual equivalente [lbf]",
             height=470,
             margin=dict(l=20, r=20, t=20, b=45),
             template="plotly_white",
@@ -1254,11 +1248,17 @@ with tab_resumen:
 
     comparacion_sumergencia = cartas_contexto.copy()
     api_sumergencia = pd.to_numeric(
-        comparacion_sumergencia.get("Sumergencia_API_m"),
+        comparacion_sumergencia.get(
+            "Sumergencia_API_m",
+            pd.Series(np.nan, index=comparacion_sumergencia.index),
+        ),
         errors="coerce",
     )
     propia_sumergencia = pd.to_numeric(
-        comparacion_sumergencia.get("Sumergencia_Cuasistatica_m"),
+        comparacion_sumergencia.get(
+            "Sumergencia_Peso_Experimental_m",
+            pd.Series(np.nan, index=comparacion_sumergencia.index),
+        ),
         errors="coerce",
     )
     mascara_comparable = api_sumergencia.notna() & propia_sumergencia.notna()
@@ -1572,9 +1572,9 @@ with tab_explorador:
                         "Sumergencia API "
                         f"{valor_texto(diag.get('Sumergencia_Relativa_pct'), '.1f', '%')} · "
                         "propia "
-                        f"{valor_texto(diag.get('Sumergencia_Relativa_Cuasistatica_pct'), '.1f', '%')} · "
+                        f"{valor_texto(diag.get('Sumergencia_Relativa_Peso_Experimental_pct'), '.1f', '%')} · "
                         "Δ propia−API "
-                        f"{valor_texto(diag.get('Delta_Sumergencia_Cuasistatica_vs_API_m'), '+.1f', ' m')} · "
+                        f"{valor_texto(diag.get('Delta_Sumergencia_Peso_Experimental_vs_API_m'), '+.1f', ' m')} · "
                         "Carrera fondo "
                         f"{valor_texto(carrera_fondo_carta(cartas_por_id[carta_id]), '.1f', ' pulg')} · "
                         "VFM bruto "
@@ -2020,16 +2020,15 @@ no tenga más peso que otro. Todavía no se aplican umbrales diagnósticos.
                         f"Sumergencia API: {valor_texto(diag.get('Sumergencia_API_m'), '.1f', ' m')} "
                         f"({valor_texto(diag.get('Sumergencia_Relativa_pct'), '.1f', '%')}) · "
                         f"calculada: "
-                        f"{valor_texto(diag.get('Sumergencia_Cuasistatica_m'), '.1f', ' m')} "
-                        f"({valor_texto(diag.get('Sumergencia_Relativa_Cuasistatica_pct'), '.1f', '%')})  \n"
+                        f"{valor_texto(diag.get('Sumergencia_Peso_Experimental_m'), '.1f', ' m')} "
+                        f"({valor_texto(diag.get('Sumergencia_Relativa_Peso_Experimental_pct'), '.1f', '%')})  \n"
                         f"Peso fluido API: "
                         f"{valor_texto(diag.get('Peso_Fluido_API_lbf'), '.0f', ' lbf')} · "
-                        f"cuasiestático: "
-                        f"{valor_texto(diag.get('Peso_Fluido_Cuasistatico_lbf'), '.0f', ' lbf')}  \n"
-                        f"Confianza cuasiestática: "
-                        f"{valor_texto(diag.get('Confianza_Peso_Cuasistatico'), '.2f')} · "
-                        f"corrección de fricción aplicada: "
-                        f"{valor_texto(diag.get('Correccion_Friccion_lbf'), '.0f', ' lbf')}  \n"
+                        f"manual equivalente: "
+                        f"{valor_texto(diag.get('Peso_Fluido_Experimental_lbf'), '.0f', ' lbf')}  \n"
+                        f"SG usada: {valor_texto(diag.get('SG_Fluido_Peso_Experimental'), '.4f')} · "
+                        f"carga hidráulica corregida: "
+                        f"{valor_texto(diag.get('Carga_Hidraulica_Efectiva_Peso_Experimental_lbf'), '.0f', ' lbf')}  \n"
                         f"Carrera geométrica propia: "
                         f"{valor_texto(diag.get('Carrera_Geometrica_Fondo_Calculada_pulg'), '.1f', ' pulg')}  \n"
                         f"Carrera efectiva propia/API: "
