@@ -27,7 +27,7 @@ PSI_PIE_AGUA = 0.433
 PIES_POR_METRO = 3.280839895013123
 
 
-def calcular_sam_basico(
+def calcular_sam_modificado(
     ascendente,
     descendente,
     profundidad_bomba_m,
@@ -37,94 +37,176 @@ def calcular_sam_basico(
     gravedad_especifica=0.994,
     gradiente_psi_m=None,
 ):
-    """Calcula Fo, PIP y sumergencia con el modo BASIC del manual SAM.
+    """Detecta cuatro codos laterales y calcula el SAM Modificado.
 
-    Fluid Load Detection BASIC define Fo como la carga media de ascenso
-    menos la carga media de descenso. El PIP basico usa profundidad y
-    diametro de bomba, gradiente de tubing y presion de tubing, sin ajustes
-    por gas en solucion. Para expresar PIP como sumergencia se resta la
-    presion de casing y se divide por el mismo gradiente global.
+    Los dos codos superiores pertenecen a la rama ascendente y los dos
+    inferiores a la descendente. Cada codo se busca desde el extremo de la
+    rama hacia el interior, donde el trazo deja de ser aproximadamente
+    vertical y pasa a ser aproximadamente horizontal. Las horizontales son
+    los promedios de las cargas de cada par. El metodo es unico para todos
+    los diagnosticos y no usa etiquetas diagnosticas ni valores de la API.
     """
     salida = {
-        "Calculo_SAM_Basico_Valido": False,
-        "Motivo_SAM_Basico_No_Valido": "",
-        "Metodo_Carga_Fluido_SAM": "BASIC_PROMEDIO_Ramas",
-        "Carga_Media_Ascenso_SAM_lbf": np.nan,
-        "Carga_Media_Descenso_SAM_lbf": np.nan,
-        "Peso_Fluido_SAM_lbf": np.nan,
+        "Calculo_SAM_Modificado_Valido": False,
+        "Motivo_SAM_Modificado_No_Valido": "",
+        "Metodo_SAM_Seleccionado": "SAM_MODIFICADO_CODOS_LATERALES",
+        "Regla_Inferior_SAM_Modificado": "PROMEDIO_DOS_CODOS_AZULES",
+        "Azul_Izquierdo_Incluido_SAM_Modificado": True,
+        "Carga_Roja_Izquierda_SAM_Modificado_lbf": np.nan,
+        "Carga_Roja_Derecha_SAM_Modificado_lbf": np.nan,
+        "Carga_Azul_Izquierda_SAM_Modificado_lbf": np.nan,
+        "Carga_Azul_Derecha_SAM_Modificado_lbf": np.nan,
+        "Posicion_Roja_Izquierda_SAM_Modificado_pulg": np.nan,
+        "Posicion_Roja_Derecha_SAM_Modificado_pulg": np.nan,
+        "Posicion_Azul_Izquierda_SAM_Modificado_pulg": np.nan,
+        "Posicion_Azul_Derecha_SAM_Modificado_pulg": np.nan,
+        "Carga_Superior_SAM_Seleccionada_lbf": np.nan,
+        "Carga_Inferior_SAM_Seleccionada_lbf": np.nan,
+        "Peso_Fluido_SAM_Seleccionado_lbf": np.nan,
         "Area_Piston_SAM_pulg2": np.nan,
         "Diferencial_Carga_SAM_psi": np.nan,
         "Presion_Tubing_SAM_kg_cm2": np.nan,
         "Presion_Casing_SAM_kg_cm2": np.nan,
-        "Presion_Tubing_SAM_psi": np.nan,
-        "Presion_Casing_SAM_psi": np.nan,
         "Gravedad_Especifica_SAM": np.nan,
         "Gradiente_SAM_psi_m": np.nan,
         "Presion_Descarga_Bomba_SAM_psi": np.nan,
-        "PIP_SAM_psi": np.nan,
-        "Sumergencia_SAM_m": np.nan,
-        "Sumergencia_Relativa_SAM_pct": np.nan,
-        "Nivel_Dinamico_SAM_m": np.nan,
+        "PIP_SAM_Seleccionado_psi": np.nan,
+        "Sumergencia_SAM_Seleccionada_m": np.nan,
+        "Sumergencia_Relativa_SAM_Seleccionada_pct": np.nan,
+        "Nivel_Dinamico_SAM_Modificado_m": np.nan,
     }
     try:
+        x_asc = np.asarray(ascendente["posicion"], dtype=float)
         y_asc = np.asarray(ascendente["carga"], dtype=float)
+        x_desc = np.asarray(descendente["posicion"], dtype=float)
         y_desc = np.asarray(descendente["carga"], dtype=float)
-        y_asc = y_asc[np.isfinite(y_asc)]
-        y_desc = y_desc[np.isfinite(y_desc)]
-        if min(len(y_asc), len(y_desc)) < 3:
+        va = np.isfinite(x_asc) & np.isfinite(y_asc)
+        vd = np.isfinite(x_desc) & np.isfinite(y_desc)
+        x_asc, y_asc = x_asc[va], y_asc[va]
+        x_desc, y_desc = x_desc[vd], y_desc[vd]
+        if min(len(x_asc), len(x_desc)) < 5:
             raise ValueError("RAMAS_INSUFICIENTES")
+
+        rango_x = float(max(np.max(x_asc), np.max(x_desc)) - min(np.min(x_asc), np.min(x_desc)))
+        rango_y = float(max(np.max(y_asc), np.max(y_desc)) - min(np.min(y_asc), np.min(y_desc)))
+        if rango_x <= 0 or rango_y <= 0:
+            raise ValueError("CARRERA_NULA")
+
+        def detectar_codo(x, y, invertir=False):
+            if invertir:
+                x, y = x[::-1], y[::-1]
+            n = len(x)
+            # El codo debe pertenecer al lateral: se conserva el tramo
+            # continuo hasta que la posicion se aleja 75 % de la carrera.
+            # En golpe de fluido/compresion el codo inferior derecho puede
+            # desplazarse muy hacia el centro, por eso la banda es amplia.
+            distancia = np.abs(x - x[0])
+            fuera = np.flatnonzero(distancia > 0.75 * rango_x)
+            limite_lateral = int(fuera[0] + 1) if len(fuera) else n
+            limite = max(6, min(n, limite_lateral))
+            x, y = x[:limite], y[:limite]
+            if len(x) < 5:
+                raise ValueError("TRAMO_LATERAL_INSUFICIENTE")
+            kernel = np.array([0.25, 0.50, 0.25])
+            xs = np.convolve(np.pad(x, 1, mode="edge"), kernel, mode="valid")
+            ys = np.convolve(np.pad(y, 1, mode="edge"), kernel, mode="valid")
+            mejor = None
+            mejor_relajado = None
+            for i in range(2, len(xs) - 2):
+                entrada = np.array([
+                    (xs[i] - xs[i - 2]) / rango_x,
+                    (ys[i] - ys[i - 2]) / rango_y,
+                ])
+                salida_local = np.array([
+                    (xs[i + 2] - xs[i]) / rango_x,
+                    (ys[i + 2] - ys[i]) / rango_y,
+                ])
+                ne, ns = np.linalg.norm(entrada), np.linalg.norm(salida_local)
+                if ne <= 1e-9 or ns <= 1e-9:
+                    continue
+                ve = abs(entrada[1]) / ne
+                hs = abs(salida_local[0]) / ns
+                giro = np.arccos(np.clip(np.dot(entrada, salida_local) / (ne * ns), -1.0, 1.0))
+                # La direccion de recorrido es siempre vertical -> meseta.
+                # Este filtro descarta el codo opuesto (meseta -> vertical),
+                # aunque ambos esten dentro de la misma banda lateral.
+                score_relajado = float(giro * (0.35 + ve) * (0.35 + hs))
+                if mejor_relajado is None or score_relajado > mejor_relajado[0]:
+                    mejor_relajado = (score_relajado, i)
+                if ve >= 0.45 and hs >= 0.45:
+                    score = float(giro * ve * hs)
+                    if mejor is None or score > mejor[0]:
+                        mejor = (score, i)
+            if mejor is None:
+                mejor = mejor_relajado
+            if mejor is None:
+                raise ValueError("INFLEXION_NO_ENCONTRADA")
+            indice = mejor[1]
+            return float(x[indice]), float(y[indice])
+
+        x_roja_izq, roja_izquierda = detectar_codo(x_asc, y_asc, invertir=False)
+        x_roja_der, roja_derecha = detectar_codo(x_asc, y_asc, invertir=True)
+        x_azul_der, azul_derecha = detectar_codo(x_desc, y_desc, invertir=False)
+        x_azul_izq, azul_izquierda = detectar_codo(x_desc, y_desc, invertir=True)
+        carga_superior = float(np.mean([roja_izquierda, roja_derecha]))
+        carga_inferior = float(np.mean([azul_izquierda, azul_derecha]))
+        peso = carga_superior - carga_inferior
+        if not np.isfinite(peso) or peso <= 0:
+            raise ValueError("CARGA_FLUIDO_MODIFICADA_NO_POSITIVA")
 
         profundidad = float(profundidad_bomba_m)
         diametro = float(diametro_piston_pulg)
         pt_kg = float(presion_tubing_kg_cm2)
         pc_kg = float(presion_casing_kg_cm2)
         sg = float(gravedad_especifica)
-        if not np.isfinite([profundidad, diametro, pt_kg, pc_kg, sg]).all():
-            raise ValueError("DATOS_SAM_INCOMPLETOS")
-        if profundidad <= 0 or diametro <= 0 or sg <= 0:
-            raise ValueError("DATOS_SAM_FISICAMENTE_INVALIDOS")
-
         gradiente = pd.to_numeric(gradiente_psi_m, errors="coerce")
         if not np.isfinite(gradiente) or gradiente <= 0:
             gradiente = PSI_PIE_AGUA * PIES_POR_METRO * sg
-
-        carga_asc = float(np.mean(y_asc))
-        carga_desc = float(np.mean(y_desc))
-        peso_fluido = carga_asc - carga_desc
-        if peso_fluido <= 0:
-            raise ValueError("CARGA_FLUIDO_SAM_NO_POSITIVA")
+        if (
+            not np.isfinite([profundidad, diametro, pt_kg, pc_kg, sg]).all()
+            or profundidad <= 0
+            or diametro <= 0
+            or sg <= 0
+        ):
+            raise ValueError("DATOS_SAM_FISICAMENTE_INVALIDOS")
 
         area = float(np.pi * diametro ** 2 / 4.0)
-        diferencial_psi = float(peso_fluido / area)
         pt_psi = float(pt_kg * KG_CM2_A_PSI)
         pc_psi = float(pc_kg * KG_CM2_A_PSI)
-        presion_descarga = float(pt_psi + gradiente * profundidad)
-        pip = float(presion_descarga - diferencial_psi)
+        pd_psi = float(pt_psi + gradiente * profundidad)
+        pip = float(pd_psi - peso / area)
         sumergencia = float((pip - pc_psi) / gradiente)
-
         salida.update({
-            "Calculo_SAM_Basico_Valido": True,
-            "Carga_Media_Ascenso_SAM_lbf": carga_asc,
-            "Carga_Media_Descenso_SAM_lbf": carga_desc,
-            "Peso_Fluido_SAM_lbf": peso_fluido,
+            "Calculo_SAM_Modificado_Valido": True,
+            "Carga_Roja_Izquierda_SAM_Modificado_lbf": roja_izquierda,
+            "Carga_Roja_Derecha_SAM_Modificado_lbf": roja_derecha,
+            "Carga_Azul_Izquierda_SAM_Modificado_lbf": azul_izquierda,
+            "Carga_Azul_Derecha_SAM_Modificado_lbf": azul_derecha,
+            "Posicion_Roja_Izquierda_SAM_Modificado_pulg": x_roja_izq,
+            "Posicion_Roja_Derecha_SAM_Modificado_pulg": x_roja_der,
+            "Posicion_Azul_Izquierda_SAM_Modificado_pulg": x_azul_izq,
+            "Posicion_Azul_Derecha_SAM_Modificado_pulg": x_azul_der,
+            "Carga_Superior_SAM_Seleccionada_lbf": carga_superior,
+            "Carga_Inferior_SAM_Seleccionada_lbf": carga_inferior,
+            "Peso_Fluido_SAM_Seleccionado_lbf": float(peso),
             "Area_Piston_SAM_pulg2": area,
-            "Diferencial_Carga_SAM_psi": diferencial_psi,
+            "Diferencial_Carga_SAM_psi": float(peso / area),
             "Presion_Tubing_SAM_kg_cm2": pt_kg,
             "Presion_Casing_SAM_kg_cm2": pc_kg,
-            "Presion_Tubing_SAM_psi": pt_psi,
-            "Presion_Casing_SAM_psi": pc_psi,
             "Gravedad_Especifica_SAM": sg,
             "Gradiente_SAM_psi_m": float(gradiente),
-            "Presion_Descarga_Bomba_SAM_psi": presion_descarga,
-            "PIP_SAM_psi": pip,
-            "Sumergencia_SAM_m": sumergencia,
-            "Sumergencia_Relativa_SAM_pct": float(
+            "Presion_Descarga_Bomba_SAM_psi": pd_psi,
+            "PIP_SAM_Seleccionado_psi": pip,
+            "Sumergencia_SAM_Seleccionada_m": sumergencia,
+            "Sumergencia_Relativa_SAM_Seleccionada_pct": float(
                 100.0 * sumergencia / profundidad
             ),
-            "Nivel_Dinamico_SAM_m": float(profundidad - sumergencia),
+            "Nivel_Dinamico_SAM_Modificado_m": float(
+                profundidad - sumergencia
+            ),
         })
     except Exception as error:
-        salida["Motivo_SAM_Basico_No_Valido"] = str(error)
+        salida["Motivo_SAM_Modificado_No_Valido"] = str(error)
     return salida
 
 
@@ -3039,9 +3121,9 @@ def procesar_json(
                 ),
             )
 
-            # Modulo independiente SAM BASIC. No participa de la carta
+            # Modulo independiente SAM Modificado. No participa de la carta
             # patrones, del llenado ni de las reglas diagnosticas.
-            sam_basico = calcular_sam_basico(
+            sam_modificado = calcular_sam_modificado(
                 ascendente=asc,
                 descendente=desc,
                 profundidad_bomba_m=profundidad_bomba_m,
@@ -3060,7 +3142,9 @@ def procesar_json(
                     posicion=posicion,
                     carga=carga,
                     carga_horizontal_superior=(
-                        sam_basico["Carga_Media_Ascenso_SAM_lbf"]
+                        sam_modificado[
+                            "Carga_Superior_SAM_Seleccionada_lbf"
+                        ]
                     ),
                 )
             )
@@ -3255,7 +3339,7 @@ def procesar_json(
                 ),
                 "Separacion_Horizontales": carga_asc - carga_desc,
                 **sumergencia_propia,
-                **sam_basico,
+                **sam_modificado,
                 "Area_Real": area_poligono(posicion, carga), "Area_Ideal": area_ideal,
                 "Llenado_Calculado_pct": llenado_calculado,
                 "Llenado_API_pct": llenado_api,
@@ -4097,6 +4181,7 @@ def procesar_json(
     )
 
 
+    # ------------------------------------------------------------
     print(
         "Cartas extremadamente angostas rechazadas:",
         int(
@@ -6764,6 +6849,94 @@ def procesar_json(
                 "localizada en el extremo izquierdo de la descendente"
             )
 
+            # El impacto de bomba contamina el codo azul izquierdo. Por
+            # definicion del SAM Modificado, en esta familia la horizontal
+            # inferior usa solamente el codo azul derecho. El punto izquierdo
+            # se conserva para auditoria, pero no interviene en Fo ni PIP.
+            resultado = resultado.copy()
+            resultado["Regla_Inferior_SAM_Modificado"] = (
+                "SOLO_CODO_AZUL_DERECHO"
+            )
+            resultado["Azul_Izquierdo_Incluido_SAM_Modificado"] = False
+            for tabla_sam in (resultados_cartas, base_diagnosticos):
+                mascara_carta_sam = tabla_sam["CartaId"].astype(int) == carta_id
+                tabla_sam.loc[
+                    mascara_carta_sam, "Regla_Inferior_SAM_Modificado"
+                ] = "SOLO_CODO_AZUL_DERECHO"
+                tabla_sam.loc[
+                    mascara_carta_sam,
+                    "Azul_Izquierdo_Incluido_SAM_Modificado",
+                ] = False
+            azul_derecho = pd.to_numeric(
+                resultado.get("Carga_Azul_Derecha_SAM_Modificado_lbf"),
+                errors="coerce",
+            )
+            superior_sam = pd.to_numeric(
+                resultado.get("Carga_Superior_SAM_Seleccionada_lbf"),
+                errors="coerce",
+            )
+            area_sam = pd.to_numeric(
+                resultado.get("Area_Piston_SAM_pulg2"), errors="coerce"
+            )
+            gradiente_sam = pd.to_numeric(
+                resultado.get("Gradiente_SAM_psi_m"), errors="coerce"
+            )
+            descarga_sam = pd.to_numeric(
+                resultado.get("Presion_Descarga_Bomba_SAM_psi"),
+                errors="coerce",
+            )
+            casing_sam_kg = pd.to_numeric(
+                resultado.get("Presion_Casing_SAM_kg_cm2"), errors="coerce"
+            )
+            profundidad_sam = pd.to_numeric(
+                resultado.get("Profundidad_Bomba_m"), errors="coerce"
+            )
+            peso_sam = superior_sam - azul_derecho
+            if (
+                np.isfinite([
+                    azul_derecho, superior_sam, area_sam, gradiente_sam,
+                    descarga_sam, casing_sam_kg, profundidad_sam,
+                ]).all()
+                and peso_sam > 0
+                and area_sam > 0
+                and gradiente_sam > 0
+                and profundidad_sam > 0
+            ):
+                pip_sam = descarga_sam - peso_sam / area_sam
+                sumergencia_sam = (
+                    pip_sam - casing_sam_kg * KG_CM2_A_PSI
+                ) / gradiente_sam
+                correccion_sam = {
+                    "Metodo_SAM_Seleccionado": (
+                        "SAM_MODIFICADO_GOLPE_BOMBA_AZUL_DERECHO"
+                    ),
+                    "Regla_Inferior_SAM_Modificado": (
+                        "SOLO_CODO_AZUL_DERECHO"
+                    ),
+                    "Azul_Izquierdo_Incluido_SAM_Modificado": False,
+                    "Carga_Inferior_SAM_Seleccionada_lbf": azul_derecho,
+                    "Peso_Fluido_SAM_Seleccionado_lbf": peso_sam,
+                    "Diferencial_Carga_SAM_psi": peso_sam / area_sam,
+                    "PIP_SAM_Seleccionado_psi": pip_sam,
+                    "Sumergencia_SAM_Seleccionada_m": sumergencia_sam,
+                    "Sumergencia_Relativa_SAM_Seleccionada_pct": (
+                        100.0 * sumergencia_sam / profundidad_sam
+                    ),
+                    "Nivel_Dinamico_SAM_Modificado_m": (
+                        profundidad_sam - sumergencia_sam
+                    ),
+                }
+                for campo, valor in correccion_sam.items():
+                    resultado[campo] = valor
+                    resultados_cartas.loc[
+                        resultados_cartas["CartaId"].astype(int) == carta_id,
+                        campo,
+                    ] = valor
+                    base_diagnosticos.loc[
+                        base_diagnosticos["CartaId"].astype(int) == carta_id,
+                        campo,
+                    ] = valor
+
         # Si la transferencia derecha no pudo medirse y la carta conserva
         # un llenado alto, un vacío superior pequeño y solamente un
         # vacío inferior moderado, no se atribuye automáticamente la
@@ -7377,23 +7550,54 @@ def procesar_json(
                 ),
             "Peso_Fluido_Horizontales_lbf":
                 resultado.get("Peso_Fluido_Horizontales_lbf", np.nan),
-            "Calculo_SAM_Basico_Valido": bool(
-                resultado.get("Calculo_SAM_Basico_Valido", False)
+            "Calculo_SAM_Modificado_Valido": bool(
+                resultado.get("Calculo_SAM_Modificado_Valido", False)
             ),
-            "Motivo_SAM_Basico_No_Valido": resultado.get(
-                "Motivo_SAM_Basico_No_Valido", ""
+            "Motivo_SAM_Modificado_No_Valido": resultado.get(
+                "Motivo_SAM_Modificado_No_Valido", ""
             ),
-            "Metodo_Carga_Fluido_SAM": resultado.get(
-                "Metodo_Carga_Fluido_SAM", "BASIC_PROMEDIO_RAMAS"
+            "Metodo_SAM_Seleccionado": resultado.get(
+                "Metodo_SAM_Seleccionado", "SAM_MODIFICADO_CODOS_LATERALES"
             ),
-            "Carga_Media_Ascenso_SAM_lbf": resultado.get(
-                "Carga_Media_Ascenso_SAM_lbf", np.nan
+            "Regla_Inferior_SAM_Modificado": resultado.get(
+                "Regla_Inferior_SAM_Modificado",
+                "PROMEDIO_DOS_CODOS_AZULES",
             ),
-            "Carga_Media_Descenso_SAM_lbf": resultado.get(
-                "Carga_Media_Descenso_SAM_lbf", np.nan
+            "Azul_Izquierdo_Incluido_SAM_Modificado": bool(
+                resultado.get("Azul_Izquierdo_Incluido_SAM_Modificado", True)
             ),
-            "Peso_Fluido_SAM_lbf": resultado.get(
-                "Peso_Fluido_SAM_lbf", np.nan
+            "Carga_Roja_Izquierda_SAM_Modificado_lbf": resultado.get(
+                "Carga_Roja_Izquierda_SAM_Modificado_lbf", np.nan
+            ),
+            "Carga_Roja_Derecha_SAM_Modificado_lbf": resultado.get(
+                "Carga_Roja_Derecha_SAM_Modificado_lbf", np.nan
+            ),
+            "Carga_Azul_Izquierda_SAM_Modificado_lbf": resultado.get(
+                "Carga_Azul_Izquierda_SAM_Modificado_lbf", np.nan
+            ),
+            "Carga_Azul_Derecha_SAM_Modificado_lbf": resultado.get(
+                "Carga_Azul_Derecha_SAM_Modificado_lbf", np.nan
+            ),
+            "Posicion_Roja_Izquierda_SAM_Modificado_pulg": resultado.get(
+                "Posicion_Roja_Izquierda_SAM_Modificado_pulg", np.nan
+            ),
+            "Posicion_Roja_Derecha_SAM_Modificado_pulg": resultado.get(
+                "Posicion_Roja_Derecha_SAM_Modificado_pulg", np.nan
+            ),
+            "Posicion_Azul_Izquierda_SAM_Modificado_pulg": resultado.get(
+                "Posicion_Azul_Izquierda_SAM_Modificado_pulg", np.nan
+            ),
+            "Posicion_Azul_Derecha_SAM_Modificado_pulg": resultado.get(
+                "Posicion_Azul_Derecha_SAM_Modificado_pulg", np.nan
+            ),
+            "Carga_Superior_SAM_Seleccionada_lbf": resultado.get(
+                "Carga_Superior_SAM_Seleccionada_lbf", np.nan
+            ),
+            "Carga_Inferior_SAM_Seleccionada_lbf": resultado.get(
+                "Carga_Inferior_SAM_Seleccionada_lbf", np.nan
+            ),
+            "Peso_Fluido_SAM_Seleccionado_lbf": resultado.get(
+                "Peso_Fluido_SAM_Seleccionado_lbf", np.nan
             ),
             "Area_Piston_SAM_pulg2": resultado.get(
                 "Area_Piston_SAM_pulg2", np.nan
@@ -7416,18 +7620,20 @@ def procesar_json(
             "Presion_Descarga_Bomba_SAM_psi": resultado.get(
                 "Presion_Descarga_Bomba_SAM_psi", np.nan
             ),
-            "PIP_SAM_psi": resultado.get("PIP_SAM_psi", np.nan),
-            "Sumergencia_SAM_m": resultado.get(
-                "Sumergencia_SAM_m", np.nan
+            "PIP_SAM_Seleccionado_psi": resultado.get(
+                "PIP_SAM_Seleccionado_psi", np.nan
             ),
-            "Sumergencia_Relativa_SAM_pct": resultado.get(
-                "Sumergencia_Relativa_SAM_pct", np.nan
+            "Sumergencia_SAM_Seleccionada_m": resultado.get(
+                "Sumergencia_SAM_Seleccionada_m", np.nan
             ),
-            "Nivel_Dinamico_SAM_m": resultado.get(
-                "Nivel_Dinamico_SAM_m", np.nan
+            "Sumergencia_Relativa_SAM_Seleccionada_pct": resultado.get(
+                "Sumergencia_Relativa_SAM_Seleccionada_pct", np.nan
             ),
-            "Delta_Sumergencia_SAM_vs_API_m": (
-                resultado.get("Sumergencia_SAM_m", np.nan)
+            "Nivel_Dinamico_SAM_Modificado_m": resultado.get(
+                "Nivel_Dinamico_SAM_Modificado_m", np.nan
+            ),
+            "Delta_Sumergencia_SAM_Seleccionada_vs_API_m": (
+                resultado.get("Sumergencia_SAM_Seleccionada_m", np.nan)
                 - resultado.get("Sumergencia_API_m", np.nan)
             ),
             "Peso_Fluido_API_lbf":

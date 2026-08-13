@@ -46,7 +46,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-13-sam-basic-auditable-v45"
+    "2026-08-13-sam-modificado-codos-laterales-v47"
 )
 
 COLORES = {
@@ -438,18 +438,18 @@ def figura_carta(
     # peso de fluido y sumergencia. No participan del diagnostico de carta.
     if mostrar_horizontales_peso and resultado is not None:
         calculo_valido = bool(
-            resultado.get("Calculo_SAM_Basico_Valido", False)
+            resultado.get("Calculo_SAM_Modificado_Valido", False)
         )
         carga_superior_peso = pd.to_numeric(
             resultado.get(
-                "Carga_Media_Ascenso_SAM_lbf",
+                "Carga_Superior_SAM_Seleccionada_lbf",
                 np.nan,
             ),
             errors="coerce",
         )
         carga_inferior_peso = pd.to_numeric(
             resultado.get(
-                "Carga_Media_Descenso_SAM_lbf",
+                "Carga_Inferior_SAM_Seleccionada_lbf",
                 np.nan,
             ),
             errors="coerce",
@@ -466,16 +466,49 @@ def figura_carta(
                 x=[x_min, x_max],
                 y=[carga_superior_peso, carga_superior_peso],
                 mode="lines",
-                name="SAM Basic - ascenso medio",
+                name="SAM Modificado - superior",
                 line=dict(color="#f59e0b", width=2, dash="dot"),
             ))
             fig.add_trace(go.Scatter(
                 x=[x_min, x_max],
                 y=[carga_inferior_peso, carga_inferior_peso],
                 mode="lines",
-                name="SAM Basic - descenso medio",
+                name="SAM Modificado - inferior",
                 line=dict(color="#06b6d4", width=2, dash="dot"),
             ))
+            puntos_rojos_x = pd.to_numeric(pd.Series([
+                resultado.get("Posicion_Roja_Izquierda_SAM_Modificado_pulg"),
+                resultado.get("Posicion_Roja_Derecha_SAM_Modificado_pulg"),
+            ]), errors="coerce").to_numpy()
+            puntos_rojos_y = pd.to_numeric(pd.Series([
+                resultado.get("Carga_Roja_Izquierda_SAM_Modificado_lbf"),
+                resultado.get("Carga_Roja_Derecha_SAM_Modificado_lbf"),
+            ]), errors="coerce").to_numpy()
+            puntos_azules_x = pd.to_numeric(pd.Series([
+                resultado.get("Posicion_Azul_Izquierda_SAM_Modificado_pulg"),
+                resultado.get("Posicion_Azul_Derecha_SAM_Modificado_pulg"),
+            ]), errors="coerce").to_numpy()
+            puntos_azules_y = pd.to_numeric(pd.Series([
+                resultado.get("Carga_Azul_Izquierda_SAM_Modificado_lbf"),
+                resultado.get("Carga_Azul_Derecha_SAM_Modificado_lbf"),
+            ]), errors="coerce").to_numpy()
+            if not bool(resultado.get(
+                "Azul_Izquierdo_Incluido_SAM_Modificado", True
+            )):
+                puntos_azules_x = puntos_azules_x[1:]
+                puntos_azules_y = puntos_azules_y[1:]
+            if np.isfinite(puntos_rojos_x).all() and np.isfinite(puntos_rojos_y).all():
+                fig.add_trace(go.Scatter(
+                    x=puntos_rojos_x, y=puntos_rojos_y,
+                    mode="markers", name="Codos superiores",
+                    marker=dict(color="#ef4444", size=8),
+                ))
+            if np.isfinite(puntos_azules_x).all() and np.isfinite(puntos_azules_y).all():
+                fig.add_trace(go.Scatter(
+                    x=puntos_azules_x, y=puntos_azules_y,
+                    mode="markers", name="Codos inferiores",
+                    marker=dict(color="#38bdf8", size=8),
+                ))
     fecha = pd.to_datetime(diagnostico.get("Fecha"), errors="coerce")
     fecha_texto = fecha.strftime("%d/%m/%Y %H:%M") if pd.notna(fecha) else ""
     fig.update_layout(
@@ -733,8 +766,8 @@ def construir_exportacion_cartas(cartas):
         "Sumergencia_Relativa_pct",
         "Sumergencia_API_m",
         "Sumergencia_Propia_m",
-        "Sumergencia_Relativa_SAM_pct",
-        "Delta_Sumergencia_SAM_vs_API_m",
+        "Sumergencia_Relativa_SAM_Seleccionada_pct",
+        "Delta_Sumergencia_SAM_Seleccionada_vs_API_m",
         "Calculo_Sumergencia_Propia_Valido",
         "Motivo_Sumergencia_Propia_No_Valida",
         "Peso_Fluido_Horizontales_lbf",
@@ -833,8 +866,8 @@ def construir_exportacion_pozos(cartas):
             "Sumergencia_Relativa_pct",
             "Sumergencia_API_m",
             "Sumergencia_Propia_m",
-            "Sumergencia_Relativa_SAM_pct",
-            "Delta_Sumergencia_SAM_vs_API_m",
+            "Sumergencia_Relativa_SAM_Seleccionada_pct",
+            "Delta_Sumergencia_SAM_Seleccionada_vs_API_m",
             "Torque_Reductor_pct",
             "Carga_Estructural_pct",
             "VFM_Bruta_m3_d",
@@ -880,11 +913,11 @@ archivos = st.sidebar.file_uploader(
     accept_multiple_files=True,
 )
 mostrar_horizontales_peso = st.sidebar.checkbox(
-    "Mostrar horizontales SAM Basic",
+    "Mostrar horizontales SAM Modificado",
     value=False,
     help=(
-        "Muestra las cargas medias de ascenso y descenso usadas por SAM "
-        "Basic. No modifica la carta patrones de cálculo ni los "
+        "Muestra las líneas obtenidas de los cuatro codos laterales. No "
+        "modifica la carta patrones de cálculo ni los "
         "diagnósticos."
     ),
 )
@@ -896,7 +929,7 @@ mostrar_carta_patrones = st.sidebar.checkbox(
         "Ocultarla no modifica el llenado ni los diagnósticos."
     ),
 )
-with st.sidebar.expander("Parámetros SAM Basic", expanded=False):
+with st.sidebar.expander("Parámetros SAM Modificado", expanded=False):
     presion_tubing_sam_kg_cm2 = st.number_input(
         "Presión de tubing [kg/cm²]",
         min_value=0.0,
@@ -1145,12 +1178,11 @@ with tab_resumen:
     )
     c4.metric("Pozos con variación", variables)
 
-    st.subheader("Comparación de peso de fluido — SAM Basic")
+    st.subheader("Comparación de peso de fluido — SAM Modificado")
     st.caption(
         "Compara directamente PesoFluido informado por la API con la "
-        "carga de fluido SAM Basic: carga media de la carrera ascendente "
-        "menos carga media de la carrera descendente. No usa calibraciones "
-        "ni detección experimental de hombros."
+        "carga de fluido SAM Modificado: promedio de los dos codos "
+        "superiores menos promedio de los dos codos inferiores."
     )
     st.caption(
         "Unidades interpretadas actualmente: cargas de fondo y PesoFluido "
@@ -1168,7 +1200,7 @@ with tab_resumen:
     )
     peso_horizontales = pd.to_numeric(
         comparacion_peso.get(
-            "Peso_Fluido_SAM_lbf",
+            "Peso_Fluido_SAM_Seleccionado_lbf",
             pd.Series(np.nan, index=comparacion_peso.index),
         ),
         errors="coerce",
@@ -1254,7 +1286,7 @@ with tab_resumen:
                 "Pozo: %{customdata[0]}<br>"
                 "Carta: %{customdata[1]}<br>"
                 "API: %{x:.0f} lbf<br>"
-                "SAM Basic: %{y:.0f} lbf<br>"
+                "SAM Modificado: %{y:.0f} lbf<br>"
                 "Diferencia: %{customdata[2]:+.0f} lbf<br>"
                 "Ratio: %{customdata[3]:.3f}<extra></extra>"
             ),
@@ -1269,7 +1301,7 @@ with tab_resumen:
         ))
         fig_peso.update_layout(
             xaxis_title="Peso de fluido API [lbf]",
-            yaxis_title="Peso de fluido SAM Basic [lbf]",
+            yaxis_title="Peso de fluido SAM Modificado [lbf]",
             height=470,
             margin=dict(l=20, r=20, t=20, b=45),
             template="plotly_white",
@@ -1283,7 +1315,7 @@ with tab_resumen:
     st.subheader("Comparación general de sumergencia")
     st.caption(
         "Comparación informativa entre la sumergencia informada por la API "
-        "y la calculada mediante PIP SAM Basic. Solo incluye cartas "
+        "y la calculada mediante SAM Modificado. Solo incluye cartas "
         "con ambos valores disponibles; no modifica los diagnósticos."
     )
     st.caption(
@@ -1302,7 +1334,7 @@ with tab_resumen:
     )
     propia_sumergencia = pd.to_numeric(
         comparacion_sumergencia.get(
-            "Sumergencia_SAM_m",
+            "Sumergencia_SAM_Seleccionada_m",
             pd.Series(np.nan, index=comparacion_sumergencia.index),
         ),
         errors="coerce",
@@ -1618,9 +1650,9 @@ with tab_explorador:
                         "Sumergencia API "
                         f"{valor_texto(diag.get('Sumergencia_Relativa_pct'), '.1f', '%')} · "
                         "propia "
-                        f"{valor_texto(diag.get('Sumergencia_Relativa_SAM_pct'), '.1f', '%')} · "
+                        f"{valor_texto(diag.get('Sumergencia_Relativa_SAM_Seleccionada_pct'), '.1f', '%')} · "
                         "Δ propia−API "
-                        f"{valor_texto(diag.get('Delta_Sumergencia_SAM_vs_API_m'), '+.1f', ' m')} · "
+                        f"{valor_texto(diag.get('Delta_Sumergencia_SAM_Seleccionada_vs_API_m'), '+.1f', ' m')} · "
                         "Carrera fondo "
                         f"{valor_texto(carrera_fondo_carta(cartas_por_id[carta_id]), '.1f', ' pulg')} · "
                         "VFM bruto "
@@ -2066,13 +2098,13 @@ no tenga más peso que otro. Todavía no se aplican umbrales diagnósticos.
                         f"Sumergencia API: {valor_texto(diag.get('Sumergencia_API_m'), '.1f', ' m')} "
                         f"({valor_texto(diag.get('Sumergencia_Relativa_pct'), '.1f', '%')}) · "
                         f"calculada: "
-                        f"{valor_texto(diag.get('Sumergencia_SAM_m'), '.1f', ' m')} "
-                        f"({valor_texto(diag.get('Sumergencia_Relativa_SAM_pct'), '.1f', '%')})  \n"
+                        f"{valor_texto(diag.get('Sumergencia_SAM_Seleccionada_m'), '.1f', ' m')} "
+                        f"({valor_texto(diag.get('Sumergencia_Relativa_SAM_Seleccionada_pct'), '.1f', '%')})  \n"
                         f"Peso fluido API: "
                         f"{valor_texto(diag.get('Peso_Fluido_API_lbf'), '.0f', ' lbf')} · "
-                        f"SAM Basic: "
-                        f"{valor_texto(diag.get('Peso_Fluido_SAM_lbf'), '.0f', ' lbf')}  \n"
-                        f"PIP SAM: {valor_texto(diag.get('PIP_SAM_psi'), '.1f', ' psi')} · "
+                        f"SAM ({diag.get('Metodo_SAM_Seleccionado', '—')}): "
+                        f"{valor_texto(diag.get('Peso_Fluido_SAM_Seleccionado_lbf'), '.0f', ' lbf')}  \n"
+                        f"PIP SAM: {valor_texto(diag.get('PIP_SAM_Seleccionado_psi'), '.1f', ' psi')} · "
                         f"gradiente: {valor_texto(diag.get('Gradiente_SAM_psi_m'), '.3f', ' psi/m')}  \n"
                         f"Carrera geométrica propia: "
                         f"{valor_texto(diag.get('Carrera_Geometrica_Fondo_Calculada_pulg'), '.1f', ' pulg')}  \n"
