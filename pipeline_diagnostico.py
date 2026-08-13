@@ -92,14 +92,14 @@ def calcular_sam_modificado(
         if rango_x <= 0 or rango_y <= 0:
             raise ValueError("CARRERA_NULA")
 
-        def detectar_lateral(lado):
-            # Las dos ramas, concatenadas sin repetir los extremos, recuperan
-            # el orden circular original de adquisicion. La transferencia se
-            # busca como un tramo consecutivo; no como una nube de puntos.
-            x = np.concatenate([x_asc, x_desc[1:-1]])
-            y = np.concatenate([y_asc, y_desc[1:-1]])
-            x_min_global = float(np.min(x))
-            x_max_global = float(np.max(x))
+        def detectar_lateral(x, y, lado):
+            # Pertenencia estricta por carrera: la izquierda recibe solamente
+            # la ascendente (minimo -> maximo) y la derecha solamente la
+            # descendente (maximo -> minimo). Los indices nunca se mezclan.
+            x = np.asarray(x, dtype=float)
+            y = np.asarray(y, dtype=float)
+            x_min_global = float(min(np.min(x_asc), np.min(x_desc)))
+            x_max_global = float(max(np.max(x_asc), np.max(x_desc)))
             if lado == "izquierda":
                 mascara = x <= x_min_global + 0.52 * rango_x
             else:
@@ -139,13 +139,17 @@ def calcular_sam_modificado(
                     if len(singulares) < 2 or singulares[0] <= 1e-9:
                         continue
                     no_linealidad = float(singulares[1] / singulares[0])
-                    if no_linealidad > 0.09:
+                    # Laterales oblicuos de perdida en viajera o friccion
+                    # pueden ser suavemente curvos. La pertenencia estricta a
+                    # una sola carrera permite relajar esta tolerancia sin
+                    # riesgo de saltar a la rama opuesta.
+                    if no_linealidad > 0.16:
                         continue
                     score = amplitud * (0.65 + verticalidad) * (
                         1.0 + 0.025 * len(tramo)
                     ) * (
                         1.0 - min(0.75, 2.5 * no_linealidad)
-                    )
+                    ) / (1.0 + 0.08 * inicio)
                     if mejor is None or score > mejor[0]:
                         mejor = (score, inicio, fin)
             if mejor is None:
@@ -239,11 +243,11 @@ def calcular_sam_modificado(
         (
             x_azul_izq, azul_izquierda,
             x_roja_izq, roja_izquierda,
-        ) = detectar_lateral("izquierda")
+        ) = detectar_lateral(x_asc, y_asc, "izquierda")
         (
             x_azul_der, azul_derecha,
             x_roja_der, roja_derecha,
-        ) = detectar_lateral("derecha")
+        ) = detectar_lateral(x_desc, y_desc, "derecha")
         carga_superior = float(np.mean([roja_izquierda, roja_derecha]))
         carga_inferior = float(np.mean([azul_izquierda, azul_derecha]))
         peso = carga_superior - carga_inferior

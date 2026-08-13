@@ -46,7 +46,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-13-sam-modificado-transferencia-ramas-v50"
+    "2026-08-13-sam-modificado-analisis-sumergencia-v52"
 )
 
 COLORES = {
@@ -1231,272 +1231,172 @@ with tab_resumen:
     )
     c4.metric("Pozos con variación", variables)
 
-    st.subheader("Comparación de peso de fluido — SAM Modificado")
+    st.subheader("Sumergencia SAM Modificado por diagnóstico")
     st.caption(
-        "Compara directamente PesoFluido informado por la API con la "
-        "carga de fluido SAM Modificado: promedio de los dos codos "
-        "superiores menos promedio de los dos codos inferiores."
+        "Distribución de sumergencia relativa para golpe/compresión, "
+        "pozo subexplotado y pozo bien explotado."
     )
-    st.caption(
-        "Unidades interpretadas actualmente: cargas de fondo y PesoFluido "
-        "en lbf; diámetro del pistón en pulgadas; profundidad de bomba en "
-        "metros. Las dos últimas no intervienen en este gráfico."
-    )
-
-    comparacion_peso = cartas_contexto.copy()
-    peso_api = pd.to_numeric(
-        comparacion_peso.get(
-            "Peso_Fluido_API_lbf",
-            pd.Series(np.nan, index=comparacion_peso.index),
-        ),
-        errors="coerce",
-    )
-    peso_horizontales = pd.to_numeric(
-        comparacion_peso.get(
-            "Peso_Fluido_SAM_Seleccionado_lbf",
-            pd.Series(np.nan, index=comparacion_peso.index),
-        ),
-        errors="coerce",
-    )
-    mascara_peso = (
-        peso_api.notna()
-        & peso_horizontales.notna()
-        & (peso_api > 0)
-        & (peso_horizontales > 0)
-    )
-    pesos_comparables = comparacion_peso.loc[mascara_peso].copy()
-    pesos_comparables["Peso_API_lbf"] = peso_api.loc[mascara_peso]
-    pesos_comparables["Peso_Horizontales_lbf"] = (
-        peso_horizontales.loc[mascara_peso]
-    )
-    pesos_comparables["Delta_Peso_lbf"] = (
-        pesos_comparables["Peso_Horizontales_lbf"]
-        - pesos_comparables["Peso_API_lbf"]
-    )
-    pesos_comparables["Ratio_Horizontales_API"] = (
-        pesos_comparables["Peso_Horizontales_lbf"]
-        / pesos_comparables["Peso_API_lbf"]
-    )
-
-    total_peso = len(comparacion_peso)
-    n_peso = len(pesos_comparables)
-    cobertura_peso = 100.0 * n_peso / total_peso if total_peso else np.nan
-    p1, p2, p3, p4, p5, p6 = st.columns(6)
-    p1.caption("Cartas comparables")
-    p1.markdown(f"### {n_peso} / {total_peso}")
-    p2.caption("Cobertura")
-    p2.markdown(f"### {valor_texto(cobertura_peso, '.1f', '%')}")
-
-    if pesos_comparables.empty:
-        for columna, titulo in zip(
-            (p3, p4, p5, p6),
-            ("Sesgo SAM−API", "Error absoluto medio", "Ratio mediano", "Correlación"),
-        ):
-            columna.caption(titulo)
-            columna.markdown("### —")
-        st.info(
-            "No hay cartas con ambos pesos positivos disponibles para el filtro."
+    analisis_sumergencia = cartas_contexto.copy()
+    for destino, origen in {
+        "Sumergencia_SAM_m": "Sumergencia_SAM_Seleccionada_m",
+        "Sumergencia_SAM_pct": "Sumergencia_Relativa_SAM_Seleccionada_pct",
+        "Diametro_Piston_pulg": "DiametroPistonBomba",
+        "Profundidad_Bomba_m": "ProfundidadBomba",
+        "GPM_Analisis": "GPM",
+    }.items():
+        analisis_sumergencia[destino] = pd.to_numeric(
+            analisis_sumergencia.get(
+                origen, pd.Series(np.nan, index=analisis_sumergencia.index)
+            ), errors="coerce"
         )
-    else:
-        sesgo_peso = pesos_comparables["Delta_Peso_lbf"].mean()
-        mae_peso = pesos_comparables["Delta_Peso_lbf"].abs().mean()
-        ratio_mediano = pesos_comparables["Ratio_Horizontales_API"].median()
-        correlacion_peso = pesos_comparables[
-            ["Peso_API_lbf", "Peso_Horizontales_lbf"]
-        ].corr().iloc[0, 1]
 
-        p3.caption("Sesgo método−API")
-        p3.markdown(f"### {valor_texto(sesgo_peso, '.0f', ' lbf')}")
-        p4.caption("Error absoluto medio")
-        p4.markdown(f"### {valor_texto(mae_peso, '.0f', ' lbf')}")
-        p5.caption("Ratio mediano")
-        p5.markdown(f"### {valor_texto(ratio_mediano, '.3f')}")
-        p6.caption("Correlación")
-        p6.markdown(f"### {valor_texto(correlacion_peso, '.3f')}")
-
-        minimo_peso = float(np.nanmin([
-            pesos_comparables["Peso_API_lbf"].min(),
-            pesos_comparables["Peso_Horizontales_lbf"].min(),
-        ]))
-        maximo_peso = float(np.nanmax([
-            pesos_comparables["Peso_API_lbf"].max(),
-            pesos_comparables["Peso_Horizontales_lbf"].max(),
-        ]))
-        fig_peso = go.Figure()
-        fig_peso.add_trace(go.Scatter(
-            x=pesos_comparables["Peso_API_lbf"],
-            y=pesos_comparables["Peso_Horizontales_lbf"],
-            mode="markers",
-            name="Cartas",
-            marker=dict(size=8, opacity=0.65, color="#0f9d58"),
-            customdata=np.column_stack([
-                pesos_comparables["Pozo"].astype(str),
-                pesos_comparables["CartaId"].astype(str),
-                pesos_comparables["Delta_Peso_lbf"],
-                pesos_comparables["Ratio_Horizontales_API"],
-            ]),
-            hovertemplate=(
-                "Pozo: %{customdata[0]}<br>"
-                "Carta: %{customdata[1]}<br>"
-                "API: %{x:.0f} lbf<br>"
-                "SAM Modificado: %{y:.0f} lbf<br>"
-                "Diferencia: %{customdata[2]:+.0f} lbf<br>"
-                "Ratio: %{customdata[3]:.3f}<extra></extra>"
+    grupos_sumergencia = [
+        ("Golpe de fluido / compresión",
+         ["Posible golpe de fluido",
+          "Posible compresión/interferencia de gas"],
+         (0.0, 10.0), "#f97316"),
+        ("Pozo subexplotado", ["Posible pozo subexplotado"],
+         (15.0, None), "#16a34a"),
+        ("Pozo bien explotado", ["Pozo bien explotado"],
+         (0.0, 50.0), "#0ea5e9"),
+    ]
+    for columna, (nombre, diagnosticos, referencias, color) in zip(
+        st.columns(3), grupos_sumergencia
+    ):
+        valores = analisis_sumergencia.loc[
+            analisis_sumergencia["Diagnostico_Principal"].isin(diagnosticos),
+            "Sumergencia_SAM_pct",
+        ].dropna()
+        figura = go.Figure(go.Histogram(
+            x=valores, nbinsx=28, marker_color=color, opacity=0.82,
+            hovertemplate="Sumergencia: %{x:.1f}%<br>Cartas: %{y}<extra></extra>",
+        ))
+        for referencia in referencias:
+            if referencia is not None:
+                figura.add_vline(
+                    x=referencia, line_dash="dash", line_color="#6b7280"
+                )
+        figura.update_layout(
+            title=(
+                f"{nombre}<br><sup>n={len(valores)} · mediana="
+                f"{valor_texto(valores.median(), '.1f', '%')}</sup>"
             ),
-        ))
-        fig_peso.add_trace(go.Scatter(
-            x=[minimo_peso, maximo_peso],
-            y=[minimo_peso, maximo_peso],
-            mode="lines",
-            name="Igualdad",
-            line=dict(color="#6b7280", dash="dash"),
-            hoverinfo="skip",
-        ))
-        fig_peso.update_layout(
-            xaxis_title="Peso de fluido API [lbf]",
-            yaxis_title="Peso de fluido SAM Modificado [lbf]",
-            height=470,
-            margin=dict(l=20, r=20, t=20, b=45),
+            xaxis_title="Sumergencia relativa [%]", yaxis_title="Cartas",
+            height=360, margin=dict(l=15, r=15, t=65, b=45),
+            showlegend=False, template="plotly_white",
+        )
+        with columna:
+            st.plotly_chart(
+                figura, use_container_width=True,
+                key=f"hist_sumergencia_{nombre}"
+            )
+
+    diagnosticos_graficos = [
+        diagnostico
+        for _, diagnosticos, _, _ in grupos_sumergencia
+        for diagnostico in diagnosticos
+    ]
+    relaciones = analisis_sumergencia.loc[
+        analisis_sumergencia["Diagnostico_Principal"].isin(
+            diagnosticos_graficos
+        ) & analisis_sumergencia["Sumergencia_SAM_m"].notna()
+    ].copy()
+    colores_diagnostico = {
+        "Posible golpe de fluido": "#f97316",
+        "Posible compresión/interferencia de gas": "#2563eb",
+        "Posible pozo subexplotado": "#16a34a",
+        "Pozo bien explotado": "#0ea5e9",
+    }
+
+    def mostrar_relacion(
+        campo_x, titulo_x, titulo, key,
+        campo_y="Sumergencia_SAM_m",
+        titulo_y="Sumergencia SAM Modificado [m]",
+        color_por_sumergencia=False,
+    ):
+        figura = go.Figure()
+        if color_por_sumergencia:
+            parte = relaciones.dropna(
+                subset=[campo_x, campo_y, "Sumergencia_SAM_m"]
+            )
+            figura.add_trace(go.Scatter(
+                x=parte[campo_x], y=parte[campo_y], mode="markers",
+                marker=dict(
+                    size=8, opacity=0.72,
+                    color=parte["Sumergencia_SAM_m"],
+                    colorscale="RdYlGn",
+                    colorbar=dict(title="Sumergencia [m]"),
+                ),
+                customdata=np.column_stack([
+                    parte["Pozo"].astype(str),
+                    parte["CartaId"].astype(str),
+                    parte["Sumergencia_SAM_m"],
+                    parte["Diagnostico_Principal"].astype(str),
+                ]),
+                hovertemplate=(
+                    "Pozo: %{customdata[0]}<br>Carta: %{customdata[1]}<br>"
+                    "Diagnóstico: %{customdata[3]}<br>"
+                    + titulo_x + ": %{x:.2f}<br>"
+                    + titulo_y + ": %{y:.1f}<br>"
+                    "Sumergencia: %{customdata[2]:.1f} m<extra></extra>"
+                ),
+            ))
+        else:
+            for diagnostico, color in colores_diagnostico.items():
+                parte = relaciones.loc[
+                    relaciones["Diagnostico_Principal"].eq(diagnostico)
+                ].dropna(subset=[campo_x, campo_y])
+                figura.add_trace(go.Scatter(
+                    x=parte[campo_x], y=parte[campo_y], mode="markers",
+                    name=diagnostico.replace("Posible ", ""),
+                    marker=dict(size=8, opacity=0.68, color=color),
+                    customdata=np.column_stack([
+                        parte["Pozo"].astype(str),
+                        parte["CartaId"].astype(str),
+                    ]),
+                    hovertemplate=(
+                        "Pozo: %{customdata[0]}<br>Carta: %{customdata[1]}<br>"
+                        + titulo_x + ": %{x:.2f}<br>"
+                        + titulo_y + ": %{y:.1f}<extra></extra>"
+                    ),
+                ))
+        if campo_y == "Sumergencia_SAM_m":
+            figura.add_hline(y=0, line_dash="dot", line_color="#6b7280")
+        figura.update_layout(
+            title=titulo, xaxis_title=titulo_x, yaxis_title=titulo_y,
+            height=430, margin=dict(l=20, r=20, t=55, b=65),
             template="plotly_white",
+            legend=dict(orientation="h", y=-0.22),
         )
-        st.plotly_chart(
-            fig_peso,
-            use_container_width=True,
-            key="comparacion_general_peso_fluido",
+        st.plotly_chart(figura, use_container_width=True, key=key)
+
+    st.subheader("Relación con parámetros físicos y operativos")
+    columnas = st.columns(2)
+    with columnas[0]:
+        mostrar_relacion(
+            "Diametro_Piston_pulg", "Diámetro del pistón [pulg]",
+            "Sumergencia vs diámetro de pistón", "sumergencia_vs_diametro"
         )
-
-    st.subheader("Comparación general de sumergencia")
-    st.caption(
-        "Comparación informativa entre la sumergencia informada por la API "
-        "y la calculada mediante SAM Modificado. Solo incluye cartas "
-        "con ambos valores disponibles; no modifica los diagnósticos."
-    )
-    st.caption(
-        "Parámetros globales editables en la barra lateral. PIP = presión "
-        "de descarga - Fo/área del pistón; sumergencia = "
-        "(PIP - presión de casing) / gradiente."
-    )
-
-    comparacion_sumergencia = cartas_contexto.copy()
-    api_sumergencia = pd.to_numeric(
-        comparacion_sumergencia.get(
-            "Sumergencia_API_m",
-            pd.Series(np.nan, index=comparacion_sumergencia.index),
-        ),
-        errors="coerce",
-    )
-    propia_sumergencia = pd.to_numeric(
-        comparacion_sumergencia.get(
-            "Sumergencia_SAM_Seleccionada_m",
-            pd.Series(np.nan, index=comparacion_sumergencia.index),
-        ),
-        errors="coerce",
-    )
-    mascara_comparable = api_sumergencia.notna() & propia_sumergencia.notna()
-    comparables = comparacion_sumergencia.loc[mascara_comparable].copy()
-    comparables["Sumergencia_API_m"] = api_sumergencia.loc[mascara_comparable]
-    comparables["Sumergencia_Propia_m"] = propia_sumergencia.loc[mascara_comparable]
-    comparables["Delta_Propia_API_m"] = (
-        comparables["Sumergencia_Propia_m"]
-        - comparables["Sumergencia_API_m"]
-    )
-
-    cantidad_total = len(cartas_contexto)
-    cantidad_comparable = len(comparables)
-    cobertura_comparacion = (
-        100.0 * cantidad_comparable / cantidad_total
-        if cantidad_total
-        else np.nan
-    )
-
-    s1, s2, s3, s4, s5 = st.columns(5)
-    s1.caption("Cartas comparables")
-    s1.markdown(f"### {cantidad_comparable} / {cantidad_total}")
-    s2.caption("Cobertura")
-    s2.markdown(
-        f"### {valor_texto(cobertura_comparacion, '.1f', '%')}"
-    )
-
-    if comparables.empty:
-        s3.caption("Sesgo propia−API")
-        s3.markdown("### —")
-        s4.caption("Error absoluto medio")
-        s4.markdown("### —")
-        s5.caption("Correlación")
-        s5.markdown("### —")
-        st.info(
-            "No hay cartas con sumergencia API y propia disponibles "
-            "simultáneamente para este filtro."
+    with columnas[1]:
+        mostrar_relacion(
+            "Profundidad_Bomba_m", "Profundidad de bomba [m]",
+            "Sumergencia vs profundidad de bomba",
+            "sumergencia_vs_profundidad"
         )
-    else:
-        sesgo_sumergencia = comparables["Delta_Propia_API_m"].mean()
-        mae_sumergencia = comparables["Delta_Propia_API_m"].abs().mean()
-        correlacion_sumergencia = comparables[
-            ["Sumergencia_API_m", "Sumergencia_Propia_m"]
-        ].corr().iloc[0, 1]
-
-        s3.caption("Sesgo propia−API")
-        s3.markdown(
-            f"### {valor_texto(sesgo_sumergencia, '.1f', ' m')}"
+    columnas = st.columns(2)
+    with columnas[0]:
+        mostrar_relacion(
+            "Diametro_Piston_pulg", "Diámetro del pistón [pulg]",
+            "Diámetro de pistón vs profundidad de bomba",
+            "diametro_vs_profundidad",
+            campo_y="Profundidad_Bomba_m",
+            titulo_y="Profundidad de bomba [m]",
+            color_por_sumergencia=True,
         )
-        s4.caption("Error absoluto medio")
-        s4.markdown(
-            f"### {valor_texto(mae_sumergencia, '.1f', ' m')}"
-        )
-        s5.caption("Correlación")
-        s5.markdown(
-            f"### {valor_texto(correlacion_sumergencia, '.3f')}"
-        )
-
-        limite_minimo = float(np.nanmin([
-            comparables["Sumergencia_API_m"].min(),
-            comparables["Sumergencia_Propia_m"].min(),
-        ]))
-        limite_maximo = float(np.nanmax([
-            comparables["Sumergencia_API_m"].max(),
-            comparables["Sumergencia_Propia_m"].max(),
-        ]))
-
-        fig_sumergencia = go.Figure()
-        fig_sumergencia.add_trace(go.Scatter(
-            x=comparables["Sumergencia_API_m"],
-            y=comparables["Sumergencia_Propia_m"],
-            mode="markers",
-            name="Cartas",
-            marker=dict(size=8, opacity=0.65, color="#0874d1"),
-            customdata=np.column_stack([
-                comparables["Pozo"].astype(str),
-                comparables["CartaId"].astype(str),
-                comparables["Delta_Propia_API_m"],
-            ]),
-            hovertemplate=(
-                "Pozo: %{customdata[0]}<br>"
-                "Carta: %{customdata[1]}<br>"
-                "API: %{x:.1f} m<br>"
-                "Propia: %{y:.1f} m<br>"
-                "Diferencia: %{customdata[2]:+.1f} m"
-                "<extra></extra>"
-            ),
-        ))
-        fig_sumergencia.add_trace(go.Scatter(
-            x=[limite_minimo, limite_maximo],
-            y=[limite_minimo, limite_maximo],
-            mode="lines",
-            name="Igualdad",
-            line=dict(color="#6b7280", dash="dash"),
-            hoverinfo="skip",
-        ))
-        fig_sumergencia.update_layout(
-            xaxis_title="Sumergencia API [m]",
-            yaxis_title="Sumergencia propia [m]",
-            height=470,
-            margin=dict(l=20, r=20, t=20, b=45),
-            template="plotly_white",
-        )
-        st.plotly_chart(
-            fig_sumergencia,
-            use_container_width=True,
-            key="comparacion_general_sumergencia",
+    with columnas[1]:
+        mostrar_relacion(
+            "GPM_Analisis", "GPM", "Sumergencia vs GPM",
+            "sumergencia_vs_gpm"
         )
 
     st.subheader("Validación del desplazamiento de bomba")
