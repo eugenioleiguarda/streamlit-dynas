@@ -164,7 +164,7 @@ def calcular_sumergencia_desde_horizontales(
 # ubico manualmente los niveles en ValvulaMovil=18119 lbf y
 # ValvulaFija=12355 lbf: peso de fluido de referencia = 5764 lbf.
 PESO_MANUAL_REFERENCIA_ECH277_LBF = 5764.0
-PESO_SIN_CALIBRAR_REFERENCIA_ECH277_LBF = 7074.0
+PESO_SIN_CALIBRAR_REFERENCIA_ECH277_LBF = 6415.0
 FACTOR_CALIBRACION_PESO_MANUAL = (
     PESO_MANUAL_REFERENCIA_ECH277_LBF
     / PESO_SIN_CALIBRAR_REFERENCIA_ECH277_LBF
@@ -363,34 +363,31 @@ def estimar_horizontales_experimentales_peso(
         if rango_x <= 1e-9:
             raise ValueError("RECORRIDO_NULO")
 
-        # Hombro superior: nivel robusto de la rama cargada antes del giro.
-        # Se excluyen el levantamiento inicial y el propio extremo; de este
-        # modo una descarga anticipada por compresion no mueve la horizontal.
-        progreso_asc = (x_asc - x_min) / rango_x
-        indices_superiores = np.flatnonzero(
-            (progreso_asc >= 0.10) & (progreso_asc <= 0.88)
+        # Hombro superior: primer punto de la descendente que abandona de
+        # forma efectiva la posicion maxima. No se usa la meseta alta de la
+        # ascendente, que en compresion puede quedar muy por encima del giro.
+        tolerancia_x = max(0.005 * rango_x, 1e-9)
+        indices_salida_maximo = np.flatnonzero(
+            x_desc < (x_max - tolerancia_x)
         )
-        if len(indices_superiores) < 5:
+        if len(indices_salida_maximo) == 0:
             raise ValueError("HOMBRO_SUPERIOR_NO_ENCONTRADO")
-        nivel_superior = float(np.nanquantile(
-            y_asc[indices_superiores], 0.75
-        ))
-        indice_superior_rama = int(indices_superiores[
-            np.argmin(abs(y_asc[indices_superiores] - nivel_superior))
-        ])
+        indice_superior_rama = int(indices_salida_maximo[0])
+        nivel_superior = float(y_desc[indice_superior_rama])
 
-        # Hombro inferior: adquisiciones inmediatamente anteriores al inicio
-        # ascendente. La mediana de cinco puntos rechaza impactos y evita que
-        # el ultimo punto, ya en transferencia, domine el nivel.
-        indice_min_original = int(np.argmin(x_original))
-        indices_inferiores = (
-            indice_min_original - np.arange(5, 0, -1)
-        ) % len(x_original)
-        cargas_inferiores = y_original[indices_inferiores]
-        nivel_inferior = float(np.nanmedian(cargas_inferiores))
-        indice_inferior_original = int(indices_inferiores[
-            np.argmin(abs(cargas_inferiores - nivel_inferior))
+        # Hombro inferior: dentro del ultimo 10 % de recorrido hacia la
+        # izquierda, se toma el valle que precede la subida rapida de carga.
+        # Asi se ignora la transferencia vertical posterior en el extremo.
+        indices_banda_izquierda = np.flatnonzero(
+            x_desc <= (x_min + 0.10 * rango_x)
+        )
+        if len(indices_banda_izquierda) == 0:
+            raise ValueError("HOMBRO_INFERIOR_NO_ENCONTRADO")
+        indice_inferior_rama = int(indices_banda_izquierda[
+            np.argmin(y_desc[indices_banda_izquierda])
         ])
+        nivel_inferior = float(y_desc[indice_inferior_rama])
+        indice_inferior_original = indice_inferior_rama
         peso_sin_calibrar = nivel_superior - nivel_inferior
         if not np.isfinite(peso_sin_calibrar) or peso_sin_calibrar <= 0:
             raise ValueError("PESO_MANUAL_EQUIVALENTE_NO_POSITIVO")
@@ -405,7 +402,7 @@ def estimar_horizontales_experimentales_peso(
         nivel_superior = float(centro + 0.5 * peso)
         nivel_inferior = float(centro - 0.5 * peso)
 
-        carga_al_giro = float(y_asc[-1])
+        carga_al_giro = float(y_desc[0])
         transferencia_derecha = bool(
             nivel_superior - carga_al_giro > 0.15 * peso_sin_calibrar
         )
