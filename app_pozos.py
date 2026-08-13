@@ -46,7 +46,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-12-peso-manual-equivalente-v40-carrera-efectiva"
+    "2026-08-13-carrera-geometrica-horizontales-peso-v41"
 )
 
 COLORES = {
@@ -347,7 +347,12 @@ def construir_tabla_cartas(salida, produccion, controles):
     return tabla
 
 
-def figura_carta(carta, resultado, diagnostico):
+def figura_carta(
+    carta,
+    resultado,
+    diagnostico,
+    mostrar_horizontales_peso=False,
+):
     x = a_array(carta["Fondo_Posiciones"])
     y = a_array(carta["Fondo_Cargas"])
     principal = diagnostico.get("Diagnostico_Principal", "Pozo bien explotado")
@@ -387,6 +392,49 @@ def figura_carta(carta, resultado, diagnostico):
             ))
     except Exception:
         pass
+
+    # Estas rectas son exclusivamente las usadas por el calculo propio de
+    # peso de fluido y sumergencia. No participan del diagnostico de carta.
+    if mostrar_horizontales_peso and resultado is not None:
+        calculo_valido = bool(
+            resultado.get("Calculo_Peso_Experimental_Valido", False)
+        )
+        carga_superior_peso = pd.to_numeric(
+            resultado.get(
+                "Carga_Superior_Peso_Experimental_lbf",
+                np.nan,
+            ),
+            errors="coerce",
+        )
+        carga_inferior_peso = pd.to_numeric(
+            resultado.get(
+                "Carga_Inferior_Peso_Experimental_lbf",
+                np.nan,
+            ),
+            errors="coerce",
+        )
+        if (
+            calculo_valido
+            and np.isfinite(carga_superior_peso)
+            and np.isfinite(carga_inferior_peso)
+            and len(x) > 0
+        ):
+            x_min = float(np.nanmin(x))
+            x_max = float(np.nanmax(x))
+            fig.add_trace(go.Scatter(
+                x=[x_min, x_max],
+                y=[carga_superior_peso, carga_superior_peso],
+                mode="lines",
+                name="Peso fluido - superior",
+                line=dict(color="#f59e0b", width=2, dash="dot"),
+            ))
+            fig.add_trace(go.Scatter(
+                x=[x_min, x_max],
+                y=[carga_inferior_peso, carga_inferior_peso],
+                mode="lines",
+                name="Peso fluido - inferior",
+                line=dict(color="#06b6d4", width=2, dash="dot"),
+            ))
     fecha = pd.to_datetime(diagnostico.get("Fecha"), errors="coerce")
     fecha_texto = fecha.strftime("%d/%m/%Y %H:%M") if pd.notna(fecha) else ""
     fig.update_layout(
@@ -783,6 +831,14 @@ archivos = st.sidebar.file_uploader(
     "Cargar uno o más JSON de la API",
     type=["json"],
     accept_multiple_files=True,
+)
+mostrar_horizontales_peso = st.sidebar.checkbox(
+    "Mostrar horizontales de peso de fluido",
+    value=False,
+    help=(
+        "Muestra las rectas ocultas usadas para estimar peso de fluido y "
+        "sumergencia. No modifica la carta ideal ni los diagnosticos."
+    ),
 )
 archivo_controles = st.sidebar.file_uploader(
     "Actualizar controles reales (opcional)",
@@ -1449,6 +1505,7 @@ with tab_explorador:
                             cartas_por_id[carta_id],
                             resultados_por_id.get(carta_id),
                             diag,
+                            mostrar_horizontales_peso,
                         ),
                         use_container_width=True,
                         key=f"explorador_{carta_id}_{pagina}",
@@ -1888,6 +1945,7 @@ no tenga más peso que otro. Todavía no se aplican umbrales diagnósticos.
                             cartas_por_id[carta_id],
                             resultados_por_id.get(carta_id),
                             diag,
+                            mostrar_horizontales_peso,
                         ),
                         use_container_width=True,
                         key=f"detalle_{pozo}_{carta_id}_{pagina_pozo}",

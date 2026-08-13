@@ -3144,11 +3144,10 @@ def procesar_json(origen, silencioso=True):
                 )
             )
 
-            # Carrera geometrica propia: distancia horizontal entre los dos
-            # cruces del contorno real con la horizontal superior oculta.
-            # El llenado operativo se aplica mas adelante para obtener la
-            # carrera efectiva comparable con la API.
-            carrera_geometrica_calculada = (
+            # La distancia entre cruces de la horizontal superior oculta se
+            # conserva como metrica geometrica auxiliar, pero no representa
+            # la carrera completa de fondo.
+            carrera_entre_cruces_horizontal_peso = (
                 estimar_carrera_efectiva_en_horizontal_superior(
                     posicion=posicion,
                     carga=carga,
@@ -3159,11 +3158,15 @@ def procesar_json(origen, silencioso=True):
                     ),
                 )
             )
-            carrera_geometrica_calculada_pulg = (
-                carrera_geometrica_calculada[
+            carrera_entre_cruces_horizontal_peso_pulg = (
+                carrera_entre_cruces_horizontal_peso[
                     "Carrera_Efectiva_Fondo_Calculada_pulg"
                 ]
             )
+
+            # Carrera geometrica de fondo: recorrido total medido por la
+            # posicion de la carta. No incluye ningun factor de llenado.
+            carrera_geometrica_calculada_pulg = float(np.ptp(posicion))
             desplazamiento_geometrico_calculado_m3_d = (
                 calcular_desplazamiento_desde_carrera(
                     diametro_piston_pulg=diametro_piston_pulg,
@@ -3171,7 +3174,9 @@ def procesar_json(origen, silencioso=True):
                     gpm=pd.to_numeric(carta.get("GPM"), errors="coerce"),
                 )
             )
-            carrera_total_fondo_calculada_pulg = float(np.ptp(posicion))
+            carrera_total_fondo_calculada_pulg = (
+                carrera_geometrica_calculada_pulg
+            )
             desplazamiento_total_calculado_m3_d = (
                 calcular_desplazamiento_desde_carrera(
                     diametro_piston_pulg=diametro_piston_pulg,
@@ -3296,7 +3301,27 @@ def procesar_json(origen, silencioso=True):
                 "Desplazamiento_Bruto_Efectivo_m3_d": (
                     desplazamiento_geometrico_calculado_m3_d
                 ),
-                **carrera_geometrica_calculada,
+                "Carrera_Entre_Cruces_Horizontal_Peso_pulg": (
+                    carrera_entre_cruces_horizontal_peso_pulg
+                ),
+                "Posicion_Cruce_Superior_Izquierda_pulg": (
+                    carrera_entre_cruces_horizontal_peso.get(
+                        "Posicion_Cruce_Superior_Izquierda_pulg",
+                        np.nan,
+                    )
+                ),
+                "Posicion_Cruce_Superior_Derecha_pulg": (
+                    carrera_entre_cruces_horizontal_peso.get(
+                        "Posicion_Cruce_Superior_Derecha_pulg",
+                        np.nan,
+                    )
+                ),
+                "Cantidad_Cruces_Horizontal_Superior": (
+                    carrera_entre_cruces_horizontal_peso.get(
+                        "Cantidad_Cruces_Horizontal_Superior",
+                        0,
+                    )
+                ),
                 "Carrera_Geometrica_Fondo_Calculada_pulg": (
                     carrera_geometrica_calculada_pulg
                 ),
@@ -6562,14 +6587,13 @@ def procesar_json(origen, silencioso=True):
         else:
             llenado_operativo = llenado
 
-        # La distancia entre cruces de la horizontal superior es una
-        # carrera geometrica. Para compararla con la carrera efectiva de
-        # la API se descuenta la fraccion de llenado una sola vez.
+        # La carrera geometrica es el recorrido total de posicion. La carrera
+        # efectiva descuenta la fraccion de llenado exactamente una vez.
         carrera_geometrica_calculada_pulg = pd.to_numeric(
             resultado.get(
                 "Carrera_Geometrica_Fondo_Calculada_pulg",
                 resultado.get(
-                    "Carrera_Efectiva_Fondo_Calculada_pulg",
+                    "Carrera_Total_Fondo_Calculada_pulg",
                     np.nan,
                 ),
             ),
@@ -6592,7 +6616,7 @@ def procesar_json(origen, silencioso=True):
             resultado.get(
                 "Desplazamiento_Bruto_Geometrico_Calculado_m3_d",
                 resultado.get(
-                    "Desplazamiento_Bruto_Efectivo_Calculado_m3_d",
+                    "Desplazamiento_Bruto_Total_Calculado_m3_d",
                     np.nan,
                 ),
             ),
@@ -7687,6 +7711,11 @@ def procesar_json(origen, silencioso=True):
                 carrera_geometrica_calculada_pulg,
             "Carrera_Efectiva_Fondo_Calculada_pulg":
                 carrera_efectiva_calculada_pulg,
+            "Carrera_Entre_Cruces_Horizontal_Peso_pulg":
+                resultado.get(
+                    "Carrera_Entre_Cruces_Horizontal_Peso_pulg",
+                    np.nan,
+                ),
             "Posicion_Cruce_Superior_Izquierda_pulg":
                 resultado.get(
                     "Posicion_Cruce_Superior_Izquierda_pulg", np.nan
