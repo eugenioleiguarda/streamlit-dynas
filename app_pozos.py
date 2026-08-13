@@ -46,7 +46,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-13-sam-modificado-codos-laterales-v47"
+    "2026-08-13-sam-modificado-codos-laterales-v48"
 )
 
 COLORES = {
@@ -294,6 +294,33 @@ def excluir_vfm_cartas_invalidas(salida, produccion):
 def construir_tabla_cartas(salida, produccion, controles):
     muestra = salida["muestra"].copy()
     diagnosticos = salida["diagnosticos_cartas"].copy()
+
+    # Fuente canónica del módulo SAM Modificado. La salida detallada por
+    # carta siempre contiene estos campos; se vuelven a incorporar aquí por
+    # CartaId para no depender de una consolidación intermedia ni de una
+    # salida cacheada que tenga diagnosticos_cartas con un esquema anterior.
+    resultados = salida.get("resultados_cartas", pd.DataFrame()).copy()
+    columnas_sam = [
+        columna for columna in resultados.columns
+        if "SAM_" in columna or "SAM_Modificado" in columna
+    ]
+    if "CartaId" in resultados.columns and columnas_sam:
+        sam_por_carta = resultados[
+            ["CartaId"] + columnas_sam
+        ].drop_duplicates("CartaId")
+        columnas_reemplazadas = [
+            columna for columna in columnas_sam
+            if columna in diagnosticos.columns
+        ]
+        diagnosticos = diagnosticos.drop(
+            columns=columnas_reemplazadas,
+            errors="ignore",
+        ).merge(
+            sam_por_carta,
+            on="CartaId",
+            how="left",
+            validate="one_to_one",
+        )
     diagnosticos["Alertas_lista"] = diagnosticos["Alertas"].map(lista_alertas)
     diagnosticos["Diagnosticos_Todos"] = diagnosticos.apply(
         lambda f: list(dict.fromkeys(
