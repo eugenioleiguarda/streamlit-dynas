@@ -472,6 +472,240 @@ def estimar_horizontales_experimentales_peso(
     return salida
 
 
+def _ajustar_tramo_cuasistatico(x, y, rango_x, rango_y):
+    """Ajuste lineal robusto y auditable de un tramo de una rama."""
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    mascara = np.isfinite(x) & np.isfinite(y)
+    x = x[mascara]
+    y = y[mascara]
+    if len(x) < 5 or np.ptp(x) <= 0:
+        return None
+
+    mascara_robusta = np.ones(len(x), dtype=bool)
+    for _ in range(3):
+        if mascara_robusta.sum() < 5:
+            return None
+        pendiente, intercepto = np.polyfit(
+            x[mascara_robusta], y[mascara_robusta], 1
+        )
+        residuos = y - (pendiente * x + intercepto)
+        mediana = float(np.median(residuos[mascara_robusta]))
+        mad = float(
+            np.median(
+                np.abs(residuos[mascara_robusta] - mediana)
+            )
+        )
+        escala = max(1.4826 * mad, 0.005 * rango_y, 1e-9)
+        nueva = np.abs(residuos - mediana) <= 3.0 * escala
+        if np.array_equal(nueva, mascara_robusta):
+            break
+        mascara_robusta = nueva
+
+    if mascara_robusta.sum() < 5:
+        return None
+    pendiente, intercepto = np.polyfit(
+        x[mascara_robusta], y[mascara_robusta], 1
+    )
+    residuos = y[mascara_robusta] - (
+        pendiente * x[mascara_robusta] + intercepto
+    )
+    mad = float(np.median(np.abs(residuos - np.median(residuos))))
+    extension = float(np.ptp(x[mascara_robusta]))
+    pendiente_relativa = float(
+        abs(pendiente) * max(rango_x, 1e-9) / max(rango_y, 1e-9)
+    )
+    dispersion_relativa = float(mad / max(rango_y, 1e-9))
+    return {
+        "pendiente": float(pendiente),
+        "intercepto": float(intercepto),
+        "mad": mad,
+        "extension": extension,
+        "extension_relativa": float(extension / max(rango_x, 1e-9)),
+        "pendiente_relativa": pendiente_relativa,
+        "dispersion_relativa": dispersion_relativa,
+        "x_inicio": float(np.min(x[mascara_robusta])),
+        "x_fin": float(np.max(x[mascara_robusta])),
+        "n": int(mascara_robusta.sum()),
+    }
+
+
+def _seleccionar_tramo_cuasistatico(x, y, rango_x, rango_y):
+    """Busca una ventana central, persistente, plana y poco dispersa."""
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    mascara = np.isfinite(x) & np.isfinite(y)
+    x = x[mascara]
+    y = y[mascara]
+    if len(x) < 8:
+        return None
+
+    orden = np.argsort(x)
+    x = x[orden]
+    y = y[orden]
+    x_min_global = float(np.min(x))
+    candidatos = []
+    n = len(x)
+    minimo_puntos = max(5, int(np.ceil(0.12 * n)))
+    maximo_puntos = max(minimo_puntos, int(np.ceil(0.60 * n)))
+    for longitud in range(minimo_puntos, min(maximo_puntos, n) + 1):
+        for inicio in range(0, n - longitud + 1):
+            fin = inicio + longitud
+            ajuste = _ajustar_tramo_cuasistatico(
+                x[inicio:fin], y[inicio:fin], rango_x, rango_y
+            )
+            if ajuste is None or ajuste["extension_relativa"] < 0.15:
+                continue
+            centro_relativo = (
+                0.5 * (ajuste["x_inicio"] + ajuste["x_fin"])
+                - x_min_global
+            ) / max(rango_x, 1e-9)
+            if centro_relativo < 0.15 or centro_relativo > 0.85:
+                continue
+            penalizacion_borde = 0.35 * abs(centro_relativo - 0.50)
+            puntaje = (
+                ajuste["pendiente_relativa"]
+                + 3.0 * ajuste["dispersion_relativa"]
+                + penalizacion_borde
+                - 0.20 * ajuste["extension_relativa"]
+            )
+            ajuste["puntaje"] = float(puntaje)
+            candidatos.append(ajuste)
+    if not candidatos:
+        return None
+    return min(candidatos, key=lambda valor: valor["puntaje"])
+
+
+def estimar_peso_fluido_cuasistatico(
+    ascendente,
+    descendente,
+    horizontales_validas=True,
+):
+    """Estima la apertura cuasiestatica sin alterar carta ni diagnosticos."""
+    salida = {
+        "Calculo_Peso_Cuasistatico_Valido": False,
+        "Motivo_Peso_Cuasistatico_No_Valido": "NO_EVALUADO",
+        "Carga_Superior_Cuasistatica_lbf": np.nan,
+        "Carga_Inferior_Cuasistatica_lbf": np.nan,
+        "Peso_Fluido_Observado_lbf": np.nan,
+        "Correccion_Friccion_lbf": np.nan,
+        "Peso_Fluido_Cuasistatico_lbf": np.nan,
+        "Ventana_Superior_Inicio_pulg": np.nan,
+        "Ventana_Superior_Fin_pulg": np.nan,
+        "Ventana_Inferior_Inicio_pulg": np.nan,
+        "Ventana_Inferior_Fin_pulg": np.nan,
+        "Referencia_X_Peso_Cuasistatico_pulg": np.nan,
+        "Confianza_Peso_Cuasistatico": 0.0,
+        "Metodo_Peso_Cuasistatico": "NO_ESTIMABLE",
+        "Evidencia_Friccion_Peso_Cuasistatico": (
+            "NO_IDENTIFICABLE_CARTA_UNICA"
+        ),
+    }
+    try:
+        if not horizontales_validas:
+            raise ValueError("HORIZONTALES_BASE_NO_VALIDAS")
+        xa = np.asarray(ascendente["posicion"], dtype=float)
+        ya = np.asarray(ascendente["carga"], dtype=float)
+        xd = np.asarray(descendente["posicion"], dtype=float)
+        yd = np.asarray(descendente["carga"], dtype=float)
+        x_todo = np.concatenate([xa, xd])
+        y_todo = np.concatenate([ya, yd])
+        rango_x = float(np.ptp(x_todo))
+        rango_y = float(np.ptp(y_todo))
+        if rango_x <= 0 or rango_y <= 0:
+            raise ValueError("RANGO_CARTA_NO_POSITIVO")
+
+        tramo_a = _seleccionar_tramo_cuasistatico(
+            xa, ya, rango_x, rango_y
+        )
+        tramo_d = _seleccionar_tramo_cuasistatico(
+            xd, yd, rango_x, rango_y
+        )
+        if tramo_a is None or tramo_d is None:
+            raise ValueError("SIN_VENTANAS_CUASIESTATICAS_PERSISTENTES")
+
+        inicio_solape = max(tramo_a["x_inicio"], tramo_d["x_inicio"])
+        fin_solape = min(tramo_a["x_fin"], tramo_d["x_fin"])
+        extension_solape = fin_solape - inicio_solape
+        if extension_solape < 0.05 * rango_x:
+            raise ValueError("VENTANAS_SIN_SOLAPE_SUFICIENTE")
+        x_ref = float(0.5 * (inicio_solape + fin_solape))
+        carga_a = float(
+            tramo_a["pendiente"] * x_ref + tramo_a["intercepto"]
+        )
+        carga_d = float(
+            tramo_d["pendiente"] * x_ref + tramo_d["intercepto"]
+        )
+        superior = max(carga_a, carga_d)
+        inferior = min(carga_a, carga_d)
+        peso_observado = float(superior - inferior)
+        if not np.isfinite(peso_observado) or peso_observado <= 0:
+            raise ValueError("APERTURA_CUASIESTATICA_NO_POSITIVA")
+
+        calidad_pendiente = max(
+            tramo_a["pendiente_relativa"],
+            tramo_d["pendiente_relativa"],
+        )
+        calidad_dispersion = max(
+            tramo_a["dispersion_relativa"],
+            tramo_d["dispersion_relativa"],
+        )
+        persistencia = min(
+            tramo_a["extension_relativa"],
+            tramo_d["extension_relativa"],
+        )
+        solape_relativo = float(extension_solape / rango_x)
+        confianza = float(
+            np.clip(
+                1.0
+                - 1.8 * calidad_pendiente
+                - 6.0 * calidad_dispersion
+                + 0.35 * min(persistencia / 0.30, 1.0)
+                + 0.20 * min(solape_relativo / 0.20, 1.0),
+                0.0,
+                1.0,
+            )
+        )
+        if confianza < 0.35:
+            raise ValueError("BAJA_CONFIANZA_CUASIESTATICA")
+
+        salida.update({
+            "Calculo_Peso_Cuasistatico_Valido": True,
+            "Motivo_Peso_Cuasistatico_No_Valido": "",
+            "Carga_Superior_Cuasistatica_lbf": superior,
+            "Carga_Inferior_Cuasistatica_lbf": inferior,
+            "Peso_Fluido_Observado_lbf": peso_observado,
+            # La carta individual no permite separar de forma unica la
+            # friccion de otros efectos. No se fuerza una correccion falsa.
+            "Correccion_Friccion_lbf": 0.0,
+            "Peso_Fluido_Cuasistatico_lbf": peso_observado,
+            "Ventana_Superior_Inicio_pulg": (
+                tramo_a["x_inicio"] if carga_a >= carga_d
+                else tramo_d["x_inicio"]
+            ),
+            "Ventana_Superior_Fin_pulg": (
+                tramo_a["x_fin"] if carga_a >= carga_d
+                else tramo_d["x_fin"]
+            ),
+            "Ventana_Inferior_Inicio_pulg": (
+                tramo_d["x_inicio"] if carga_a >= carga_d
+                else tramo_a["x_inicio"]
+            ),
+            "Ventana_Inferior_Fin_pulg": (
+                tramo_d["x_fin"] if carga_a >= carga_d
+                else tramo_a["x_fin"]
+            ),
+            "Referencia_X_Peso_Cuasistatico_pulg": x_ref,
+            "Confianza_Peso_Cuasistatico": confianza,
+            "Metodo_Peso_Cuasistatico": (
+                "VENTANAS_ROBUSTAS_CENTRALES_SOLAPADAS"
+            ),
+        })
+    except Exception as error:
+        salida["Motivo_Peso_Cuasistatico_No_Valido"] = str(error)
+    return salida
+
+
 def calcular_sumergencia_relativa(
     sumergencia_m,
     profundidad_bomba_m,
@@ -3273,6 +3507,60 @@ def procesar_json(origen, silencioso=True):
                     ]
                 ),
             }
+
+            # Estimacion cuasiestatica independiente, destinada solo a
+            # validar peso de fluido y sumergencia. No interviene en los
+            # diagnosticos ni reemplaza la carta ideal.
+            peso_cuasistatico = estimar_peso_fluido_cuasistatico(
+                ascendente=asc,
+                descendente=desc,
+                horizontales_validas=bool(
+                    calidad["confiables"] and integridad["valida"]
+                ),
+            )
+            sumergencia_cuasistatica_base = (
+                calcular_sumergencia_desde_horizontales(
+                    carga_superior_lbf=peso_cuasistatico[
+                        "Carga_Superior_Cuasistatica_lbf"
+                    ],
+                    carga_inferior_lbf=peso_cuasistatico[
+                        "Carga_Inferior_Cuasistatica_lbf"
+                    ],
+                    profundidad_bomba_m=profundidad_bomba_m,
+                    diametro_piston_pulg=diametro_piston_pulg,
+                    sg_fluido=GRAVEDAD_ESPECIFICA_REFERENCIA,
+                    horizontales_validas=peso_cuasistatico[
+                        "Calculo_Peso_Cuasistatico_Valido"
+                    ],
+                )
+            )
+            sumergencia_cuasistatica = {
+                "Calculo_Sumergencia_Cuasistatica_Valido": (
+                    sumergencia_cuasistatica_base[
+                        "Calculo_Sumergencia_Propia_Valido"
+                    ]
+                ),
+                "Motivo_Sumergencia_Cuasistatica_No_Valida": (
+                    sumergencia_cuasistatica_base[
+                        "Motivo_Sumergencia_Propia_No_Valida"
+                    ]
+                ),
+                "Sumergencia_Cuasistatica_m": (
+                    sumergencia_cuasistatica_base[
+                        "Sumergencia_Sobre_Bomba_m"
+                    ]
+                ),
+                "Nivel_Dinamico_Cuasistatico_m": (
+                    sumergencia_cuasistatica_base[
+                        "Nivel_Dinamico_Propio_m"
+                    ]
+                ),
+                "Sumergencia_Relativa_Cuasistatica_pct": (
+                    sumergencia_cuasistatica_base[
+                        "Sumergencia_Relativa_Propia_pct"
+                    ]
+                ),
+            }
             resultados.append({
                 "CartaId": carta_id, "Pozo": carta["Pozo"], "Fecha": carta["Fecha"],
                 "GPM": pd.to_numeric(carta.get("GPM"), errors="coerce"),
@@ -3431,6 +3719,8 @@ def procesar_json(origen, silencioso=True):
                 **sumergencia_propia,
                 **horizontales_peso_experimental,
                 **sumergencia_peso_experimental,
+                **peso_cuasistatico,
+                **sumergencia_cuasistatica,
                 "Area_Real": area_poligono(posicion, carga), "Area_Ideal": area_ideal,
                 "Llenado_Calculado_pct": llenado_calculado,
                 "Llenado_API_pct": llenado_api,
@@ -7665,6 +7955,64 @@ def procesar_json(origen, silencioso=True):
                     "Sumergencia_Relativa_Peso_Experimental_pct",
                     np.nan,
                 ),
+            "Calculo_Peso_Cuasistatico_Valido": bool(
+                resultado.get("Calculo_Peso_Cuasistatico_Valido", False)
+            ),
+            "Motivo_Peso_Cuasistatico_No_Valido": resultado.get(
+                "Motivo_Peso_Cuasistatico_No_Valido", ""
+            ),
+            "Carga_Superior_Cuasistatica_lbf": resultado.get(
+                "Carga_Superior_Cuasistatica_lbf", np.nan
+            ),
+            "Carga_Inferior_Cuasistatica_lbf": resultado.get(
+                "Carga_Inferior_Cuasistatica_lbf", np.nan
+            ),
+            "Peso_Fluido_Observado_lbf": resultado.get(
+                "Peso_Fluido_Observado_lbf", np.nan
+            ),
+            "Correccion_Friccion_lbf": resultado.get(
+                "Correccion_Friccion_lbf", np.nan
+            ),
+            "Peso_Fluido_Cuasistatico_lbf": resultado.get(
+                "Peso_Fluido_Cuasistatico_lbf", np.nan
+            ),
+            "Ventana_Superior_Inicio_pulg": resultado.get(
+                "Ventana_Superior_Inicio_pulg", np.nan
+            ),
+            "Ventana_Superior_Fin_pulg": resultado.get(
+                "Ventana_Superior_Fin_pulg", np.nan
+            ),
+            "Ventana_Inferior_Inicio_pulg": resultado.get(
+                "Ventana_Inferior_Inicio_pulg", np.nan
+            ),
+            "Ventana_Inferior_Fin_pulg": resultado.get(
+                "Ventana_Inferior_Fin_pulg", np.nan
+            ),
+            "Confianza_Peso_Cuasistatico": resultado.get(
+                "Confianza_Peso_Cuasistatico", np.nan
+            ),
+            "Metodo_Peso_Cuasistatico": resultado.get(
+                "Metodo_Peso_Cuasistatico", "NO_ESTIMABLE"
+            ),
+            "Evidencia_Friccion_Peso_Cuasistatico": bool(
+                resultado.get(
+                    "Evidencia_Friccion_Peso_Cuasistatico", False
+                )
+            ),
+            "Calculo_Sumergencia_Cuasistatica_Valido": bool(
+                resultado.get(
+                    "Calculo_Sumergencia_Cuasistatica_Valido", False
+                )
+            ),
+            "Sumergencia_Cuasistatica_m": resultado.get(
+                "Sumergencia_Cuasistatica_m", np.nan
+            ),
+            "Nivel_Dinamico_Cuasistatico_m": resultado.get(
+                "Nivel_Dinamico_Cuasistatico_m", np.nan
+            ),
+            "Sumergencia_Relativa_Cuasistatica_pct": resultado.get(
+                "Sumergencia_Relativa_Cuasistatica_pct", np.nan
+            ),
             "Carga_Hidraulica_Efectiva_Peso_Experimental_lbf":
                 resultado.get(
                     "Carga_Hidraulica_Efectiva_Peso_Experimental_lbf",
@@ -7774,6 +8122,13 @@ def procesar_json(origen, silencioso=True):
             "Delta_Sumergencia_Peso_Experimental_vs_API_m": (
                 resultado.get(
                     "Sumergencia_Peso_Experimental_m",
+                    np.nan,
+                )
+                - resultado.get("Sumergencia_API_m", np.nan)
+            ),
+            "Delta_Sumergencia_Cuasistatica_vs_API_m": (
+                resultado.get(
+                    "Sumergencia_Cuasistatica_m",
                     np.nan,
                 )
                 - resultado.get("Sumergencia_API_m", np.nan)
