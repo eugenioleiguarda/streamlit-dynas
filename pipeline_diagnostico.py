@@ -3144,11 +3144,11 @@ def procesar_json(origen, silencioso=True):
                 )
             )
 
-            # Carrera efectiva propia: distancia horizontal entre los dos
-            # cruces del contorno real con la nueva horizontal superior
-            # reservada para peso de fluido. No se vuelve a multiplicar por
-            # llenado: esta carrera ya representa la porcion efectiva.
-            carrera_efectiva_calculada = (
+            # Carrera geometrica propia: distancia horizontal entre los dos
+            # cruces del contorno real con la horizontal superior oculta.
+            # El llenado operativo se aplica mas adelante para obtener la
+            # carrera efectiva comparable con la API.
+            carrera_geometrica_calculada = (
                 estimar_carrera_efectiva_en_horizontal_superior(
                     posicion=posicion,
                     carga=carga,
@@ -3159,12 +3159,15 @@ def procesar_json(origen, silencioso=True):
                     ),
                 )
             )
-            desplazamiento_calculado_m3_d = (
+            carrera_geometrica_calculada_pulg = (
+                carrera_geometrica_calculada[
+                    "Carrera_Efectiva_Fondo_Calculada_pulg"
+                ]
+            )
+            desplazamiento_geometrico_calculado_m3_d = (
                 calcular_desplazamiento_desde_carrera(
                     diametro_piston_pulg=diametro_piston_pulg,
-                    carrera_pulg=carrera_efectiva_calculada[
-                        "Carrera_Efectiva_Fondo_Calculada_pulg"
-                    ],
+                    carrera_pulg=carrera_geometrica_calculada_pulg,
                     gpm=pd.to_numeric(carta.get("GPM"), errors="coerce"),
                 )
             )
@@ -3175,21 +3178,6 @@ def procesar_json(origen, silencioso=True):
                     carrera_pulg=carrera_total_fondo_calculada_pulg,
                     gpm=pd.to_numeric(carta.get("GPM"), errors="coerce"),
                 )
-            )
-            escurrimiento_calculado_m3_d = (
-                desplazamiento_total_calculado_m3_d
-                - desplazamiento_calculado_m3_d
-                if np.isfinite(desplazamiento_total_calculado_m3_d)
-                and np.isfinite(desplazamiento_calculado_m3_d)
-                else np.nan
-            )
-            llenado_implicito_carrera_pct = (
-                100.0 * desplazamiento_calculado_m3_d
-                / desplazamiento_total_calculado_m3_d
-                if np.isfinite(desplazamiento_total_calculado_m3_d)
-                and desplazamiento_total_calculado_m3_d > 0
-                and np.isfinite(desplazamiento_calculado_m3_d)
-                else np.nan
             )
             desplazamiento_api_m3_d = pd.to_numeric(
                 carta.get("DesplazamientoEfectivo"), errors="coerce"
@@ -3306,9 +3294,15 @@ def procesar_json(origen, silencioso=True):
                     ]
                 ),
                 "Desplazamiento_Bruto_Efectivo_m3_d": (
-                    desplazamiento_calculado_m3_d
+                    desplazamiento_geometrico_calculado_m3_d
                 ),
-                **carrera_efectiva_calculada,
+                **carrera_geometrica_calculada,
+                "Carrera_Geometrica_Fondo_Calculada_pulg": (
+                    carrera_geometrica_calculada_pulg
+                ),
+                "Desplazamiento_Bruto_Geometrico_Calculado_m3_d": (
+                    desplazamiento_geometrico_calculado_m3_d
+                ),
                 "Carrera_Efectiva_Fondo_API_pulg": (
                     desplazamiento_desde_carrera_api[
                         "Carrera_Efectiva_Fondo_pulg"
@@ -3320,7 +3314,7 @@ def procesar_json(origen, silencioso=True):
                     ]
                 ),
                 "Desplazamiento_Bruto_Efectivo_Calculado_m3_d": (
-                    desplazamiento_calculado_m3_d
+                    desplazamiento_geometrico_calculado_m3_d
                 ),
                 "Carrera_Total_Fondo_Calculada_pulg": (
                     carrera_total_fondo_calculada_pulg
@@ -3329,10 +3323,10 @@ def procesar_json(origen, silencioso=True):
                     desplazamiento_total_calculado_m3_d
                 ),
                 "Escurrimiento_Calculado_m3_d": (
-                    escurrimiento_calculado_m3_d
+                    np.nan
                 ),
                 "Llenado_Implicito_Carrera_Efectiva_pct": (
-                    llenado_implicito_carrera_pct
+                    np.nan
                 ),
                 "Desplazamiento_Bruto_Efectivo_API_m3_d": (
                     desplazamiento_api_m3_d
@@ -3342,16 +3336,14 @@ def procesar_json(origen, silencioso=True):
                 ),
                 "Escurrimiento_API_m3_d": escurrimiento_api_m3_d,
                 "Delta_Desplazamiento_Calculado_vs_API_m3_d": (
-                    desplazamiento_calculado_m3_d
-                    - desplazamiento_api_m3_d
+                    np.nan
                 ),
                 "Delta_Desplazamiento_Total_Calculado_vs_API_m3_d": (
                     desplazamiento_total_calculado_m3_d
                     - desplazamiento_total_api_m3_d
                 ),
                 "Delta_Escurrimiento_Calculado_vs_API_m3_d": (
-                    escurrimiento_calculado_m3_d
-                    - escurrimiento_api_m3_d
+                    np.nan
                 ),
                 "Carrera_Fondo_pulg": float(np.ptp(posicion)),
                 "Estado_Horizontales": calidad["estado"],
@@ -6570,6 +6562,82 @@ def procesar_json(origen, silencioso=True):
         else:
             llenado_operativo = llenado
 
+        # La distancia entre cruces de la horizontal superior es una
+        # carrera geometrica. Para compararla con la carrera efectiva de
+        # la API se descuenta la fraccion de llenado una sola vez.
+        carrera_geometrica_calculada_pulg = pd.to_numeric(
+            resultado.get(
+                "Carrera_Geometrica_Fondo_Calculada_pulg",
+                resultado.get(
+                    "Carrera_Efectiva_Fondo_Calculada_pulg",
+                    np.nan,
+                ),
+            ),
+            errors="coerce",
+        )
+        factor_llenado_operativo = (
+            float(np.clip(llenado_operativo / 100.0, 0.0, 1.0))
+            if np.isfinite(llenado_operativo)
+            else np.nan
+        )
+        carrera_efectiva_calculada_pulg = (
+            carrera_geometrica_calculada_pulg * factor_llenado_operativo
+            if (
+                np.isfinite(carrera_geometrica_calculada_pulg)
+                and np.isfinite(factor_llenado_operativo)
+            )
+            else np.nan
+        )
+        desplazamiento_geometrico_calculado_m3_d = pd.to_numeric(
+            resultado.get(
+                "Desplazamiento_Bruto_Geometrico_Calculado_m3_d",
+                resultado.get(
+                    "Desplazamiento_Bruto_Efectivo_Calculado_m3_d",
+                    np.nan,
+                ),
+            ),
+            errors="coerce",
+        )
+        desplazamiento_efectivo_calculado_m3_d = (
+            desplazamiento_geometrico_calculado_m3_d
+            * factor_llenado_operativo
+            if (
+                np.isfinite(desplazamiento_geometrico_calculado_m3_d)
+                and np.isfinite(factor_llenado_operativo)
+            )
+            else np.nan
+        )
+        desplazamiento_total_calculado_m3_d = pd.to_numeric(
+            resultado.get(
+                "Desplazamiento_Bruto_Total_Calculado_m3_d",
+                np.nan,
+            ),
+            errors="coerce",
+        )
+        escurrimiento_calculado_m3_d = (
+            max(
+                desplazamiento_total_calculado_m3_d
+                - desplazamiento_efectivo_calculado_m3_d,
+                0.0,
+            )
+            if (
+                np.isfinite(desplazamiento_total_calculado_m3_d)
+                and np.isfinite(desplazamiento_efectivo_calculado_m3_d)
+            )
+            else np.nan
+        )
+        llenado_implicito_carrera_efectiva_pct = (
+            100.0
+            * desplazamiento_efectivo_calculado_m3_d
+            / desplazamiento_total_calculado_m3_d
+            if (
+                np.isfinite(desplazamiento_efectivo_calculado_m3_d)
+                and np.isfinite(desplazamiento_total_calculado_m3_d)
+                and desplazamiento_total_calculado_m3_d > 0
+            )
+            else np.nan
+        )
+
         # --------------------------------------------------------
         # 3. GOLPE DE FLUIDO / COMPRESIÓN DE GAS
         # --------------------------------------------------------
@@ -7615,10 +7683,10 @@ def procesar_json(origen, silencioso=True):
                     "Desplazamiento_Bruto_Efectivo_m3_d",
                     np.nan,
                 ),
+            "Carrera_Geometrica_Fondo_Calculada_pulg":
+                carrera_geometrica_calculada_pulg,
             "Carrera_Efectiva_Fondo_Calculada_pulg":
-                resultado.get(
-                    "Carrera_Efectiva_Fondo_Calculada_pulg", np.nan
-                ),
+                carrera_efectiva_calculada_pulg,
             "Posicion_Cruce_Superior_Izquierda_pulg":
                 resultado.get(
                     "Posicion_Cruce_Superior_Izquierda_pulg", np.nan
@@ -7638,11 +7706,10 @@ def procesar_json(origen, silencioso=True):
                     "Desplazamiento_Desde_Carrera_Efectiva_API_m3_d",
                     np.nan,
                 ),
+            "Desplazamiento_Bruto_Geometrico_Calculado_m3_d":
+                desplazamiento_geometrico_calculado_m3_d,
             "Desplazamiento_Bruto_Efectivo_Calculado_m3_d":
-                resultado.get(
-                    "Desplazamiento_Bruto_Efectivo_Calculado_m3_d",
-                    np.nan,
-                ),
+                desplazamiento_efectivo_calculado_m3_d,
             "Carrera_Total_Fondo_Calculada_pulg":
                 resultado.get(
                     "Carrera_Total_Fondo_Calculada_pulg", np.nan
@@ -7653,14 +7720,9 @@ def procesar_json(origen, silencioso=True):
                     np.nan,
                 ),
             "Escurrimiento_Calculado_m3_d":
-                resultado.get(
-                    "Escurrimiento_Calculado_m3_d", np.nan
-                ),
+                escurrimiento_calculado_m3_d,
             "Llenado_Implicito_Carrera_Efectiva_pct":
-                resultado.get(
-                    "Llenado_Implicito_Carrera_Efectiva_pct",
-                    np.nan,
-                ),
+                llenado_implicito_carrera_efectiva_pct,
             "Desplazamiento_Bruto_Efectivo_API_m3_d":
                 resultado.get(
                     "Desplazamiento_Bruto_Efectivo_API_m3_d", np.nan
@@ -7671,21 +7733,28 @@ def procesar_json(origen, silencioso=True):
                 ),
             "Escurrimiento_API_m3_d":
                 resultado.get("Escurrimiento_API_m3_d", np.nan),
-            "Delta_Desplazamiento_Calculado_vs_API_m3_d":
-                resultado.get(
-                    "Delta_Desplazamiento_Calculado_vs_API_m3_d",
-                    np.nan,
-                ),
+            "Delta_Desplazamiento_Calculado_vs_API_m3_d": (
+                desplazamiento_efectivo_calculado_m3_d
+                - pd.to_numeric(
+                    resultado.get(
+                        "Desplazamiento_Bruto_Efectivo_API_m3_d",
+                        np.nan,
+                    ),
+                    errors="coerce",
+                )
+            ),
             "Delta_Desplazamiento_Total_Calculado_vs_API_m3_d":
                 resultado.get(
                     "Delta_Desplazamiento_Total_Calculado_vs_API_m3_d",
                     np.nan,
                 ),
-            "Delta_Escurrimiento_Calculado_vs_API_m3_d":
-                resultado.get(
-                    "Delta_Escurrimiento_Calculado_vs_API_m3_d",
-                    np.nan,
-                ),
+            "Delta_Escurrimiento_Calculado_vs_API_m3_d": (
+                escurrimiento_calculado_m3_d
+                - pd.to_numeric(
+                    resultado.get("Escurrimiento_API_m3_d", np.nan),
+                    errors="coerce",
+                )
+            ),
             "Delta_Sumergencia_Peso_Experimental_vs_API_m": (
                 resultado.get(
                     "Sumergencia_Peso_Experimental_m",

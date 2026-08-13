@@ -46,7 +46,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-12-peso-manual-equivalente-v39-sg09904-desplazamiento"
+    "2026-08-12-peso-manual-equivalente-v40-carrera-efectiva"
 )
 
 COLORES = {
@@ -638,8 +638,8 @@ def construir_exportacion_cartas(cartas):
         "Sumergencia_Relativa_pct",
         "Sumergencia_API_m",
         "Sumergencia_Propia_m",
-        "Sumergencia_Relativa_Propia_pct",
-        "Delta_Sumergencia_Propia_vs_API_m",
+        "Sumergencia_Relativa_Peso_Experimental_pct",
+        "Delta_Sumergencia_Peso_Experimental_vs_API_m",
         "Calculo_Sumergencia_Propia_Valido",
         "Motivo_Sumergencia_Propia_No_Valida",
         "Peso_Fluido_Horizontales_lbf",
@@ -652,7 +652,12 @@ def construir_exportacion_cartas(cartas):
         "Carga_Estructural_pct",
         "GPM",
         "Carrera_Fondo_Carta_pulg",
+        "Carrera_Geometrica_Fondo_Calculada_pulg",
+        "Carrera_Efectiva_Fondo_Calculada_pulg",
         "Carrera_Superficie_API_pulg",
+        "Desplazamiento_Bruto_Geometrico_Calculado_m3_d",
+        "Desplazamiento_Bruto_Efectivo_Calculado_m3_d",
+        "Desplazamiento_Bruto_Efectivo_API_m3_d",
         "ProfundidadBomba",
         "DiametroPistonBomba",
         "VFM_Bruta_m3_d",
@@ -733,8 +738,8 @@ def construir_exportacion_pozos(cartas):
             "Sumergencia_Relativa_pct",
             "Sumergencia_API_m",
             "Sumergencia_Propia_m",
-            "Sumergencia_Relativa_Propia_pct",
-            "Delta_Sumergencia_Propia_vs_API_m",
+            "Sumergencia_Relativa_Peso_Experimental_pct",
+            "Delta_Sumergencia_Peso_Experimental_vs_API_m",
             "Torque_Reductor_pct",
             "Carga_Estructural_pct",
             "VFM_Bruta_m3_d",
@@ -1260,10 +1265,11 @@ with tab_resumen:
 
     st.subheader("Validación del desplazamiento de bomba")
     st.caption(
-        "La carrera efectiva propia se estima como la distancia entre los "
-        "dos cruces de la carta real con la horizontal superior oculta. El "
-        "desplazamiento efectivo propio se calcula exclusivamente con esa "
-        "carrera geométrica, el diámetro del pistón y los GPM. La carrera "
+        "La carrera geométrica propia se estima como la distancia entre los "
+        "dos cruces de la carta real con la horizontal superior oculta. La "
+        "carrera efectiva se calcula multiplicando esa carrera geométrica "
+        "por el llenado operativo. El desplazamiento efectivo propio usa "
+        "esa carrera efectiva, el diámetro del pistón y los GPM. La carrera "
         "efectiva y el desplazamiento informados por la API se usan solamente "
         "como referencia de comparación."
     )
@@ -1455,9 +1461,9 @@ with tab_explorador:
                         "Sumergencia API "
                         f"{valor_texto(diag.get('Sumergencia_Relativa_pct'), '.1f', '%')} · "
                         "propia "
-                        f"{valor_texto(diag.get('Sumergencia_Relativa_Propia_pct'), '.1f', '%')} · "
+                        f"{valor_texto(diag.get('Sumergencia_Relativa_Peso_Experimental_pct'), '.1f', '%')} · "
                         "Δ propia−API "
-                        f"{valor_texto(diag.get('Delta_Sumergencia_Propia_vs_API_m'), '+.1f', ' m')} · "
+                        f"{valor_texto(diag.get('Delta_Sumergencia_Peso_Experimental_vs_API_m'), '+.1f', ' m')} · "
                         "Carrera fondo "
                         f"{valor_texto(carrera_fondo_carta(cartas_por_id[carta_id]), '.1f', ' pulg')} · "
                         "VFM bruto "
@@ -1906,6 +1912,8 @@ no tenga más peso que otro. Todavía no se aplican umbrales diagnósticos.
                         f"SG usada: {valor_texto(diag.get('SG_Fluido_Peso_Experimental'), '.3f')} · "
                         f"carga hidráulica corregida: "
                         f"{valor_texto(diag.get('Carga_Hidraulica_Efectiva_Peso_Experimental_lbf'), '.0f', ' lbf')}  \n"
+                        f"Carrera geométrica propia: "
+                        f"{valor_texto(diag.get('Carrera_Geometrica_Fondo_Calculada_pulg'), '.1f', ' pulg')}  \n"
                         f"Carrera efectiva propia/API: "
                         f"{valor_texto(diag.get('Carrera_Efectiva_Fondo_Calculada_pulg'), '.1f', ' pulg')} / "
                         f"{valor_texto(diag.get('Carrera_Efectiva_Fondo_API_pulg'), '.1f', ' pulg')}  \n"
