@@ -49,7 +49,7 @@ def calcular_sam_modificado(
     salida = {
         "Calculo_SAM_Modificado_Valido": False,
         "Motivo_SAM_Modificado_No_Valido": "",
-        "Metodo_SAM_Seleccionado": "SAM_MODIFICADO_CODOS_LATERALES",
+        "Metodo_SAM_Seleccionado": "SAM_MODIFICADO_EXTREMOS_TRANSFERENCIA",
         "Regla_Inferior_SAM_Modificado": "PROMEDIO_DOS_CODOS_AZULES",
         "Azul_Izquierdo_Incluido_SAM_Modificado": True,
         "Carga_Roja_Izquierda_SAM_Modificado_lbf": np.nan,
@@ -92,62 +92,158 @@ def calcular_sam_modificado(
         if rango_x <= 0 or rango_y <= 0:
             raise ValueError("CARRERA_NULA")
 
-        def detectar_codo(x, y, invertir=False):
-            if invertir:
-                x, y = x[::-1], y[::-1]
-            n = len(x)
-            # El codo debe pertenecer al lateral: se conserva el tramo
-            # continuo hasta que la posicion se aleja 75 % de la carrera.
-            # En golpe de fluido/compresion el codo inferior derecho puede
-            # desplazarse muy hacia el centro, por eso la banda es amplia.
-            distancia = np.abs(x - x[0])
-            fuera = np.flatnonzero(distancia > 0.75 * rango_x)
-            limite_lateral = int(fuera[0] + 1) if len(fuera) else n
-            limite = max(6, min(n, limite_lateral))
-            x, y = x[:limite], y[:limite]
-            if len(x) < 5:
-                raise ValueError("TRAMO_LATERAL_INSUFICIENTE")
-            kernel = np.array([0.25, 0.50, 0.25])
-            xs = np.convolve(np.pad(x, 1, mode="edge"), kernel, mode="valid")
-            ys = np.convolve(np.pad(y, 1, mode="edge"), kernel, mode="valid")
-            mejor = None
-            mejor_relajado = None
-            for i in range(2, len(xs) - 2):
-                entrada = np.array([
-                    (xs[i] - xs[i - 2]) / rango_x,
-                    (ys[i] - ys[i - 2]) / rango_y,
-                ])
-                salida_local = np.array([
-                    (xs[i + 2] - xs[i]) / rango_x,
-                    (ys[i + 2] - ys[i]) / rango_y,
-                ])
-                ne, ns = np.linalg.norm(entrada), np.linalg.norm(salida_local)
-                if ne <= 1e-9 or ns <= 1e-9:
-                    continue
-                ve = abs(entrada[1]) / ne
-                hs = abs(salida_local[0]) / ns
-                giro = np.arccos(np.clip(np.dot(entrada, salida_local) / (ne * ns), -1.0, 1.0))
-                # La direccion de recorrido es siempre vertical -> meseta.
-                # Este filtro descarta el codo opuesto (meseta -> vertical),
-                # aunque ambos esten dentro de la misma banda lateral.
-                score_relajado = float(giro * (0.35 + ve) * (0.35 + hs))
-                if mejor_relajado is None or score_relajado > mejor_relajado[0]:
-                    mejor_relajado = (score_relajado, i)
-                if ve >= 0.45 and hs >= 0.45:
-                    score = float(giro * ve * hs)
-                    if mejor is None or score > mejor[0]:
-                        mejor = (score, i)
-            if mejor is None:
-                mejor = mejor_relajado
-            if mejor is None:
-                raise ValueError("INFLEXION_NO_ENCONTRADA")
-            indice = mejor[1]
-            return float(x[indice]), float(y[indice])
+        def detectar_lateral(lado):
+            # Las dos ramas, concatenadas sin repetir los extremos, recuperan
+            # el orden circular original de adquisicion. La transferencia se
+            # busca como un tramo consecutivo; no como una nube de puntos.
+            x = np.concatenate([x_asc, x_desc[1:-1]])
+            y = np.concatenate([y_asc, y_desc[1:-1]])
+            x_min_global = float(np.min(x))
+            x_max_global = float(np.max(x))
+            if lado == "izquierda":
+                mascara = x <= x_min_global + 0.52 * rango_x
+            else:
+                mascara = x >= x_max_global - 0.52 * rango_x
+            puntos = np.column_stack([
+                (x - x_min_global) / rango_x,
+                (y - np.min(y)) / rango_y,
+            ])
+            if np.count_nonzero(mascara) < 5:
+                raise ValueError("LATERAL_INSUFICIENTE")
 
-        x_roja_izq, roja_izquierda = detectar_codo(x_asc, y_asc, invertir=False)
-        x_roja_der, roja_derecha = detectar_codo(x_asc, y_asc, invertir=True)
-        x_azul_der, azul_derecha = detectar_codo(x_desc, y_desc, invertir=False)
-        x_azul_izq, azul_izquierda = detectar_codo(x_desc, y_desc, invertir=True)
+            # Se enumeran rectas consecutivas contenidas en el lateral. La
+            # ganadora maximiza el recorrido vertical y la colinealidad; sus
+            # extremos son exactamente las inflexiones pedidas.
+            mejor = None
+            for inicio in range(len(puntos) - 2):
+                if not mascara[inicio]:
+                    continue
+                for fin in range(inicio + 2, len(puntos)):
+                    if not np.all(mascara[inicio:fin + 1]):
+                        break
+                    tramo = puntos[inicio:fin + 1]
+                    amplitud = float(np.ptp(tramo[:, 1]))
+                    if amplitud < 0.10:
+                        continue
+                    delta = tramo[-1] - tramo[0]
+                    norma = float(np.linalg.norm(delta))
+                    if norma <= 1e-9:
+                        continue
+                    verticalidad = abs(float(delta[1])) / norma
+                    if verticalidad < 0.48:
+                        continue
+                    centrado = tramo - np.mean(tramo, axis=0)
+                    _, singulares, _ = np.linalg.svd(
+                        centrado, full_matrices=False
+                    )
+                    if len(singulares) < 2 or singulares[0] <= 1e-9:
+                        continue
+                    no_linealidad = float(singulares[1] / singulares[0])
+                    if no_linealidad > 0.09:
+                        continue
+                    score = amplitud * (0.65 + verticalidad) * (
+                        1.0 + 0.025 * len(tramo)
+                    ) * (
+                        1.0 - min(0.75, 2.5 * no_linealidad)
+                    )
+                    if mejor is None or score > mejor[0]:
+                        mejor = (score, inicio, fin)
+            if mejor is None:
+                raise ValueError("RECTA_TRANSFERENCIA_NO_ENCONTRADA")
+            inicio_elegido, fin_elegido = mejor[1], mejor[2]
+
+            # Recorta los extremos redondeados que todavia pueden caber en un
+            # ajuste global. Se conserva la corrida consecutiva mas larga de
+            # segmentos con direccion estable respecto del eje principal de
+            # la transferencia.
+            if fin_elegido - inicio_elegido >= 4:
+                tramo = puntos[inicio_elegido:fin_elegido + 1]
+                kernel = np.array([0.25, 0.50, 0.25])
+                suavizado = np.column_stack([
+                    np.convolve(
+                        np.pad(tramo[:, eje], 1, mode="edge"),
+                        kernel,
+                        mode="valid",
+                    )
+                    for eje in range(2)
+                ])
+                centrado = suavizado - np.mean(suavizado, axis=0)
+                _, _, vh = np.linalg.svd(centrado, full_matrices=False)
+                eje_recta = vh[0]
+                vectores = np.diff(suavizado, axis=0)
+                normas = np.linalg.norm(vectores, axis=1)
+                alineados = np.zeros(len(vectores), dtype=bool)
+                validos = normas > 1e-9
+                cosenos = np.zeros(len(vectores), dtype=float)
+                cosenos[validos] = np.abs(
+                    vectores[validos] @ eje_recta
+                ) / normas[validos]
+                alineados[validos] = cosenos[validos] >= np.cos(
+                    np.deg2rad(24.0)
+                )
+                mejor_corrida = None
+                k = 0
+                while k < len(alineados):
+                    if not alineados[k]:
+                        k += 1
+                        continue
+                    fin_corrida = k
+                    while (
+                        fin_corrida + 1 < len(alineados)
+                        and alineados[fin_corrida + 1]
+                    ):
+                        fin_corrida += 1
+                    longitud = float(np.sum(normas[k:fin_corrida + 1]))
+                    if mejor_corrida is None or longitud > mejor_corrida[0]:
+                        mejor_corrida = (longitud, k, fin_corrida)
+                    k = fin_corrida + 1
+                if mejor_corrida is not None and mejor_corrida[2] - mejor_corrida[1] >= 1:
+                    inicio_elegido += mejor_corrida[1]
+                    fin_elegido = (
+                        mejor[1] + mejor_corrida[2] + 1
+                    )
+
+            # En la derecha, golpe/compresion o perdida de viajera pueden
+            # presentar una rodilla oblicua seguida por una caida casi
+            # vertical. El azul corresponde al cambio entre ambas, no al pie
+            # de la caida. Se detecta el primer cambio sostenido de oblicuo a
+            # vertical. En laterales verticales puros no se aplica correccion.
+            if lado == "derecha" and fin_elegido - inicio_elegido >= 5:
+                tramo = puntos[inicio_elegido:fin_elegido + 1]
+                vectores = np.diff(tramo, axis=0)
+                normas = np.linalg.norm(vectores, axis=1)
+                componentes_x = np.ones(len(vectores), dtype=float)
+                validos = normas > 1e-9
+                componentes_x[validos] = (
+                    np.abs(vectores[validos, 0]) / normas[validos]
+                )
+                for k in range(3, len(componentes_x) - 1):
+                    oblicuidad_previa = float(np.median(
+                        componentes_x[max(0, k - 3):k]
+                    ))
+                    verticalidad_posterior = float(np.median(
+                        componentes_x[k:min(len(componentes_x), k + 2)]
+                    ))
+                    if oblicuidad_previa >= 0.28 and verticalidad_posterior <= 0.20:
+                        fin_elegido = inicio_elegido + k
+                        break
+
+            indices = np.arange(inicio_elegido, fin_elegido + 1)
+            indice_azul = indices[np.argmin(y[indices])]
+            indice_rojo = indices[np.argmax(y[indices])]
+            return (
+                float(x[indice_azul]), float(y[indice_azul]),
+                float(x[indice_rojo]), float(y[indice_rojo]),
+            )
+
+        (
+            x_azul_izq, azul_izquierda,
+            x_roja_izq, roja_izquierda,
+        ) = detectar_lateral("izquierda")
+        (
+            x_azul_der, azul_derecha,
+            x_roja_der, roja_derecha,
+        ) = detectar_lateral("derecha")
         carga_superior = float(np.mean([roja_izquierda, roja_derecha]))
         carga_inferior = float(np.mean([azul_izquierda, azul_derecha]))
         peso = carga_superior - carga_inferior
@@ -7557,7 +7653,8 @@ def procesar_json(
                 "Motivo_SAM_Modificado_No_Valido", ""
             ),
             "Metodo_SAM_Seleccionado": resultado.get(
-                "Metodo_SAM_Seleccionado", "SAM_MODIFICADO_CODOS_LATERALES"
+                "Metodo_SAM_Seleccionado",
+                "SAM_MODIFICADO_EXTREMOS_TRANSFERENCIA",
             ),
             "Regla_Inferior_SAM_Modificado": resultado.get(
                 "Regla_Inferior_SAM_Modificado",

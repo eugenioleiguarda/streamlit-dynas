@@ -46,7 +46,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-13-sam-modificado-codos-laterales-v48"
+    "2026-08-13-sam-modificado-transferencia-ramas-v50"
 )
 
 COLORES = {
@@ -464,6 +464,32 @@ def figura_carta(
     # Estas rectas son exclusivamente las usadas por el calculo propio de
     # peso de fluido y sumergencia. No participan del diagnostico de carta.
     if mostrar_horizontales_peso and resultado is not None:
+        # Auditoria visual del orden de adquisicion utilizado por el pipeline.
+        # Se superponen las dos carreras sobre la carta cerrada sin alterar
+        # ningun calculo ni la carta patrones.
+        for clave, nombre, color_rama in (
+            ("Ascendente", "Carrera ascendente", "#22c55e"),
+            ("Descendente", "Carrera descendente", "#fb7185"),
+        ):
+            rama = resultado.get(clave, {})
+            x_rama = np.asarray(rama.get("posicion", []), dtype=float)
+            y_rama = np.asarray(rama.get("carga", []), dtype=float)
+            cantidad_rama = min(len(x_rama), len(y_rama))
+            x_rama = x_rama[:cantidad_rama]
+            y_rama = y_rama[:cantidad_rama]
+            validos_rama = np.isfinite(x_rama) & np.isfinite(y_rama)
+            if np.count_nonzero(validos_rama) >= 2:
+                fig.add_trace(go.Scatter(
+                    x=x_rama[validos_rama],
+                    y=y_rama[validos_rama],
+                    mode="lines",
+                    name=nombre,
+                    line=dict(color=color_rama, width=3),
+                    hovertemplate=(
+                        f"{nombre}<br>Posición: %{{x:.1f}}"
+                        "<br>Carga: %{y:.0f}<extra></extra>"
+                    ),
+                ))
         calculo_valido = bool(
             resultado.get("Calculo_SAM_Modificado_Valido", False)
         )
