@@ -666,6 +666,45 @@ def calcular_sam_modificado(
         if rectangular_izq is not None and rectangular_der is not None:
             azul_rect_izq, rojo_rect_izq = rectangular_izq
             azul_rect_der, rojo_rect_der = rectangular_der
+            traslacion_cuatro_codos = False
+            desplazamientos_crudos = np.asarray([
+                actual_rojo[0][1] - rojo_rect_izq[1],
+                actual_rojo[1][1] - rojo_rect_der[1],
+                actual_azul[0][1] - azul_rect_izq[1],
+                actual_azul[1][1] - azul_rect_der[1],
+            ], dtype=float)
+            # Si los cuatro codos están trasladados hacia arriba, conserva
+            # exactamente la separación de cargas y desplaza los cuatro por
+            # un mismo delta robusto. Los puntos finales siempre se ajustan
+            # a muestras reales del lateral correspondiente.
+            if np.all(desplazamientos_crudos > 0.08 * rango_y):
+                traslacion_cuatro_codos = True
+                delta_comun = float(np.median(desplazamientos_crudos))
+
+                def punto_lateral_cercano(lado, carga_objetivo):
+                    mascara_lado = (
+                        x_ciclo <= x_min_global + 0.20 * rango_x
+                        if lado == "izquierda"
+                        else x_ciclo >= x_max_global - 0.20 * rango_x
+                    )
+                    indices_lado = np.flatnonzero(mascara_lado)
+                    indice = int(indices_lado[np.argmin(
+                        abs(y_ciclo[indices_lado] - carga_objetivo)
+                    )])
+                    return float(x_ciclo[indice]), float(y_ciclo[indice])
+
+                rojo_rect_izq = punto_lateral_cercano(
+                    "izquierda", actual_rojo[0][1] - delta_comun
+                )
+                rojo_rect_der = punto_lateral_cercano(
+                    "derecha", actual_rojo[1][1] - delta_comun
+                )
+                azul_rect_izq = punto_lateral_cercano(
+                    "izquierda", actual_azul[0][1] - delta_comun
+                )
+                azul_rect_der = punto_lateral_cercano(
+                    "derecha", actual_azul[1][1] - delta_comun
+                )
             # Conserva cada esquina que ya estaba razonablemente cerca del
             # codo interior; evita mover puntos correctos solo para forzar
             # simetría entre lados.
@@ -678,6 +717,8 @@ def calcular_sam_modificado(
             if rojo_rect_izq[1] > actual_rojo[0][1]:
                 rojo_rect_izq = actual_rojo[0]
             if abs(rojo_rect_der[1] - actual_rojo[1][1]) < 0.10 * rango_y:
+                rojo_rect_der = actual_rojo[1]
+            if rojo_rect_der[1] > actual_rojo[1][1]:
                 rojo_rect_der = actual_rojo[1]
             peso_rectangular = (
                 0.5 * (rojo_rect_izq[1] + rojo_rect_der[1])
@@ -716,12 +757,18 @@ def calcular_sam_modificado(
                 and actual_rojo[1][1] > rojo_rect_der[1] + 0.08 * rango_y
                 and peso_rectangular < peso_candidato_actual
             )
+            traslacion_carga_conservada = (
+                traslacion_cuatro_codos
+                and abs(peso_rectangular - peso_candidato_actual)
+                <= 0.03 * rango_y
+            )
             if (
                 desplazamiento_material
                 and 0 < peso_rectangular
                 and (
                     peso_rectangular <= peso_referencia - 0.01 * rango_y
                     or patron_extremos_cruzados
+                    or traslacion_carga_conservada
                 )
             ):
                 propuesta_azul = (azul_rect_izq, azul_rect_der)

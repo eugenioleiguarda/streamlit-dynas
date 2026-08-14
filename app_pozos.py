@@ -46,7 +46,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-14-laterales-rectos-recortados-v61"
+    "2026-08-14-traslacion-comun-cuatro-codos-v62"
 )
 
 COLORES = {
