@@ -422,9 +422,40 @@ def calcular_sam_modificado(
             indice = int(indices[mejor[1]])
             return float(x[indice]), float(y[indice])
 
-        candidato_izquierdo_base = detectar_lateral(
-            x_asc, y_asc, "izquierda"
-        )
+        try:
+            candidato_izquierdo_base = detectar_lateral(
+                x_asc, y_asc, "izquierda"
+            )
+        except ValueError:
+            # Respaldo exclusivo para una transferencia izquierda corta pero
+            # geométricamente inequívoca (pocas muestras en cartas CG-16).
+            # Al ejecutarse solo tras el rechazo principal no cambia ningún
+            # caso previamente resuelto.
+            x_respaldo = np.concatenate([x_asc, x_desc])
+            y_respaldo = np.concatenate([y_asc, y_desc])
+            x_min_respaldo = float(min(np.min(x_asc), np.min(x_desc)))
+            mascara_respaldo = (
+                x_respaldo <= x_min_respaldo + 0.25 * rango_x
+            )
+            indices_respaldo = np.flatnonzero(mascara_respaldo)
+            y_min_respaldo = float(min(np.min(y_asc), np.min(y_desc)))
+            if (
+                len(indices_respaldo) < 4
+                or float(np.ptp(y_respaldo[indices_respaldo])) < 0.40 * rango_y
+            ):
+                raise
+            objetivo_azul = y_min_respaldo + 0.30 * rango_y
+            objetivo_rojo = y_min_respaldo + 0.82 * rango_y
+            indice_azul = int(indices_respaldo[np.argmin(
+                abs(y_respaldo[indices_respaldo] - objetivo_azul)
+            )])
+            indice_rojo = int(indices_respaldo[np.argmin(
+                abs(y_respaldo[indices_respaldo] - objetivo_rojo)
+            )])
+            candidato_izquierdo_base = (
+                float(x_respaldo[indice_azul]), float(y_respaldo[indice_azul]),
+                float(x_respaldo[indice_rojo]), float(y_respaldo[indice_rojo]),
+            )
         candidatos_izquierda = [
             ("ascendente", candidato_izquierdo_base)
         ]
@@ -587,6 +618,114 @@ def calcular_sam_modificado(
             if score_rojo(*actual_rojo) - score_rojo(*mejor_rojo) >= 0.035
             else actual_rojo
         )
+
+        def extremos_lateral_recto(x, y, lado):
+            """Codos interiores de una transferencia lateral casi vertical."""
+            x = np.asarray(x, dtype=float)
+            y = np.asarray(y, dtype=float)
+            limite = (
+                x <= x_min_global + 0.20 * rango_x
+                if lado == "izquierda"
+                else x >= x_max_global - 0.20 * rango_x
+            )
+            indices = np.flatnonzero(limite)
+            if len(indices) < 5:
+                return None
+            # Exige que el lateral cubra buena parte de la transferencia y
+            # que su núcleo no sea una rampa oblicua.
+            carga_lateral = y[indices]
+            if float(np.ptp(carga_lateral)) < 0.45 * rango_y:
+                return None
+            centro = indices[
+                (carga_lateral >= y_min_global + 0.18 * rango_y)
+                & (carga_lateral <= y_min_global + 0.86 * rango_y)
+            ]
+            if len(centro) < 3:
+                return None
+            objetivo_azul = y_min_global + 0.30 * rango_y
+            objetivo_rojo = y_min_global + 0.82 * rango_y
+            indice_azul = int(indices[np.argmin(abs(y[indices] - objetivo_azul))])
+            indice_rojo = int(indices[np.argmin(abs(y[indices] - objetivo_rojo))])
+            return (
+                (float(x[indice_azul]), float(y[indice_azul])),
+                (float(x[indice_rojo]), float(y[indice_rojo])),
+            )
+
+        # Patrón rectangular redondeado: en lugar de tomar los extremos de
+        # carga, recorta ambos laterales en el punto donde la recta empieza a
+        # curvarse hacia las envolventes. Se evalúa como una propuesta única
+        # de cuatro codos para no forzar un punto aislado a la otra carrera.
+        x_ciclo = np.concatenate([x_asc, x_desc])
+        y_ciclo = np.concatenate([y_asc, y_desc])
+        rectangular_izq = extremos_lateral_recto(
+            x_ciclo, y_ciclo, "izquierda"
+        )
+        rectangular_der = extremos_lateral_recto(
+            x_ciclo, y_ciclo, "derecha"
+        )
+        if rectangular_izq is not None and rectangular_der is not None:
+            azul_rect_izq, rojo_rect_izq = rectangular_izq
+            azul_rect_der, rojo_rect_der = rectangular_der
+            # Conserva cada esquina que ya estaba razonablemente cerca del
+            # codo interior; evita mover puntos correctos solo para forzar
+            # simetría entre lados.
+            if abs(azul_rect_izq[1] - actual_azul[0][1]) < 0.10 * rango_y:
+                azul_rect_izq = actual_azul[0]
+            if abs(azul_rect_der[1] - actual_azul[1][1]) < 0.10 * rango_y:
+                azul_rect_der = actual_azul[1]
+            if abs(rojo_rect_izq[1] - actual_rojo[0][1]) < 0.10 * rango_y:
+                rojo_rect_izq = actual_rojo[0]
+            if rojo_rect_izq[1] > actual_rojo[0][1]:
+                rojo_rect_izq = actual_rojo[0]
+            if abs(rojo_rect_der[1] - actual_rojo[1][1]) < 0.10 * rango_y:
+                rojo_rect_der = actual_rojo[1]
+            peso_rectangular = (
+                0.5 * (rojo_rect_izq[1] + rojo_rect_der[1])
+                - 0.5 * (azul_rect_izq[1] + azul_rect_der[1])
+            )
+            peso_candidato_actual = (
+                0.5 * (actual_rojo[0][1] + actual_rojo[1][1])
+                - 0.5 * (actual_azul[0][1] + actual_azul[1][1])
+            )
+            peso_previo_propuesto = (
+                0.5 * (propuesta_rojo[0][1] + propuesta_rojo[1][1])
+                - 0.5 * (propuesta_azul[0][1] + propuesta_azul[1][1])
+            )
+            peso_referencia = (
+                min(peso_candidato_actual, peso_previo_propuesto)
+                if peso_previo_propuesto > 0
+                else peso_candidato_actual
+            )
+            desplazamiento_material = max(
+                abs(rojo_rect_der[1] - actual_rojo[1][1]),
+                abs(azul_rect_der[1] - actual_azul[1][1]),
+                abs(azul_rect_izq[1] - actual_azul[0][1]),
+            ) >= 0.08 * rango_y
+            azules_cruzados = (
+                (
+                    actual_azul[0][1] > azul_rect_izq[1] + 0.10 * rango_y
+                    and actual_azul[1][1] < azul_rect_der[1] - 0.10 * rango_y
+                )
+                or (
+                    actual_azul[0][1] < azul_rect_izq[1] - 0.10 * rango_y
+                    and actual_azul[1][1] > azul_rect_der[1] + 0.10 * rango_y
+                )
+            )
+            patron_extremos_cruzados = (
+                azules_cruzados
+                and actual_rojo[1][1] > rojo_rect_der[1] + 0.08 * rango_y
+                and peso_rectangular < peso_candidato_actual
+            )
+            if (
+                desplazamiento_material
+                and 0 < peso_rectangular
+                and (
+                    peso_rectangular <= peso_referencia - 0.01 * rango_y
+                    or patron_extremos_cruzados
+                )
+            ):
+                propuesta_azul = (azul_rect_izq, azul_rect_der)
+                propuesta_rojo = (rojo_rect_izq, rojo_rect_der)
 
         # Salvaguarda hidráulica conservadora: una reconciliación visual no
         # puede aumentar materialmente el peso de fluido respecto del método

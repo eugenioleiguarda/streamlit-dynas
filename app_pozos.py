@@ -46,7 +46,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-14-codos-independientes-conservadores-v60"
+    "2026-08-14-laterales-rectos-recortados-v61"
 )
 
 COLORES = {
