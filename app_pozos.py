@@ -46,7 +46,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-14-rojo-derecho-transferencia-v64"
+    "2026-08-14-v64-mas-segmentacion-v2-sombra-v65"
 )
 
 COLORES = {
@@ -416,6 +416,7 @@ def figura_carta(
     diagnostico,
     mostrar_horizontales_peso=False,
     mostrar_carta_patrones=True,
+    mostrar_sam_v2=False,
 ):
     x = a_array(carta["Fondo_Posiciones"])
     y = a_array(carta["Fondo_Cargas"])
@@ -561,6 +562,56 @@ def figura_carta(
                     x=puntos_azules_x, y=puntos_azules_y,
                     mode="markers", name="Codos inferiores",
                     marker=dict(color="#38bdf8", size=8),
+                ))
+    # Auditoría experimental en modo sombra. Estos puntos no intervienen
+    # en el peso, la sumergencia, el llenado ni los diagnósticos oficiales.
+    if mostrar_sam_v2 and resultado is not None:
+        if bool(resultado.get("Calculo_SAM_V2_Valido", False)):
+            x_v2_rojos = pd.to_numeric(pd.Series([
+                resultado.get("Posicion_Roja_Izquierda_SAM_V2_pulg"),
+                resultado.get("Posicion_Roja_Derecha_SAM_V2_pulg"),
+            ]), errors="coerce").to_numpy()
+            y_v2_rojos = pd.to_numeric(pd.Series([
+                resultado.get("Carga_Roja_Izquierda_SAM_V2_lbf"),
+                resultado.get("Carga_Roja_Derecha_SAM_V2_lbf"),
+            ]), errors="coerce").to_numpy()
+            x_v2_azules = pd.to_numeric(pd.Series([
+                resultado.get("Posicion_Azul_Izquierda_SAM_V2_pulg"),
+                resultado.get("Posicion_Azul_Derecha_SAM_V2_pulg"),
+            ]), errors="coerce").to_numpy()
+            y_v2_azules = pd.to_numeric(pd.Series([
+                resultado.get("Carga_Azul_Izquierda_SAM_V2_lbf"),
+                resultado.get("Carga_Azul_Derecha_SAM_V2_lbf"),
+            ]), errors="coerce").to_numpy()
+            sup_v2 = pd.to_numeric(
+                resultado.get("Carga_Superior_SAM_V2_lbf"), errors="coerce"
+            )
+            inf_v2 = pd.to_numeric(
+                resultado.get("Carga_Inferior_SAM_V2_lbf"), errors="coerce"
+            )
+            if len(x) and np.isfinite([sup_v2, inf_v2]).all():
+                limites_x = [float(np.nanmin(x)), float(np.nanmax(x))]
+                fig.add_trace(go.Scatter(
+                    x=limites_x, y=[sup_v2, sup_v2], mode="lines",
+                    name="V2 sombra - superior",
+                    line=dict(color="#fde047", width=2, dash="dash"),
+                ))
+                fig.add_trace(go.Scatter(
+                    x=limites_x, y=[inf_v2, inf_v2], mode="lines",
+                    name="V2 sombra - inferior",
+                    line=dict(color="#67e8f9", width=2, dash="dash"),
+                ))
+            if np.isfinite(x_v2_rojos).all() and np.isfinite(y_v2_rojos).all():
+                fig.add_trace(go.Scatter(
+                    x=x_v2_rojos, y=y_v2_rojos, mode="markers",
+                    name="V2 extremos superiores",
+                    marker=dict(color="#fde047", size=11, symbol="diamond-open"),
+                ))
+            if np.isfinite(x_v2_azules).all() and np.isfinite(y_v2_azules).all():
+                fig.add_trace(go.Scatter(
+                    x=x_v2_azules, y=y_v2_azules, mode="markers",
+                    name="V2 extremos inferiores",
+                    marker=dict(color="#67e8f9", size=11, symbol="diamond-open"),
                 ))
     fecha = pd.to_datetime(diagnostico.get("Fecha"), errors="coerce")
     fecha_texto = fecha.strftime("%d/%m/%Y %H:%M") if pd.notna(fecha) else ""
@@ -972,6 +1023,14 @@ mostrar_horizontales_peso = st.sidebar.checkbox(
         "Muestra las líneas obtenidas de los cuatro codos laterales. No "
         "modifica la carta patrones de cálculo ni los "
         "diagnósticos."
+    ),
+)
+mostrar_sam_v2 = st.sidebar.checkbox(
+    "Auditar segmentación geométrica V2 (experimental)",
+    value=False,
+    help=(
+        "Superpone los extremos de las transferencias detectados por el "
+        "método nuevo. Funciona en modo sombra y no modifica resultados."
     ),
 )
 mostrar_carta_patrones = st.sidebar.checkbox(
@@ -1638,6 +1697,7 @@ with tab_explorador:
                             mostrar_carta_patrones=(
                                 mostrar_carta_patrones
                             ),
+                            mostrar_sam_v2=mostrar_sam_v2,
                         ),
                         use_container_width=True,
                         key=f"explorador_{carta_id}_{pagina}",
@@ -2083,6 +2143,7 @@ no tenga más peso que otro. Todavía no se aplican umbrales diagnósticos.
                             mostrar_carta_patrones=(
                                 mostrar_carta_patrones
                             ),
+                            mostrar_sam_v2=mostrar_sam_v2,
                         ),
                         use_container_width=True,
                         key=f"detalle_{pozo}_{carta_id}_{pagina_pozo}",
