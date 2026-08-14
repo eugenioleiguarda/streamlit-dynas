@@ -93,9 +93,9 @@ def calcular_sam_modificado(
             raise ValueError("CARRERA_NULA")
 
         def detectar_lateral(x, y, lado):
-            # Pertenencia estricta por carrera: la izquierda recibe solamente
-            # la ascendente (minimo -> maximo) y la derecha solamente la
-            # descendente (maximo -> minimo). Los indices nunca se mezclan.
+            # Busca la transferencia aproximadamente recta del lateral. La
+            # carrera sirve para seguir la secuencia original, pero el codo
+            # se define por el fin de la recta y no por una meseta de carga.
             x = np.asarray(x, dtype=float)
             y = np.asarray(y, dtype=float)
             x_min_global = float(min(np.min(x_asc), np.min(x_desc)))
@@ -140,9 +140,7 @@ def calcular_sam_modificado(
                         continue
                     no_linealidad = float(singulares[1] / singulares[0])
                     # Laterales oblicuos de perdida en viajera o friccion
-                    # pueden ser suavemente curvos. La pertenencia estricta a
-                    # una sola carrera permite relajar esta tolerancia sin
-                    # riesgo de saltar a la rama opuesta.
+                    # pueden ser suavemente curvos.
                     if no_linealidad > 0.16:
                         continue
                     score = amplitud * (0.65 + verticalidad) * (
@@ -207,34 +205,42 @@ def calcular_sam_modificado(
                         mejor[1] + mejor_corrida[2] + 1
                     )
 
-            # En la derecha, golpe/compresion o perdida de viajera pueden
-            # presentar una rodilla oblicua seguida por una caida casi
-            # vertical. El azul corresponde al cambio entre ambas, no al pie
-            # de la caida. Se detecta el primer cambio sostenido de oblicuo a
-            # vertical. En laterales verticales puros no se aplica correccion.
-            if lado == "derecha" and fin_elegido - inicio_elegido >= 5:
-                tramo = puntos[inicio_elegido:fin_elegido + 1]
-                vectores = np.diff(tramo, axis=0)
-                normas = np.linalg.norm(vectores, axis=1)
-                componentes_x = np.ones(len(vectores), dtype=float)
-                validos = normas > 1e-9
-                componentes_x[validos] = (
-                    np.abs(vectores[validos, 0]) / normas[validos]
-                )
-                for k in range(3, len(componentes_x) - 1):
-                    oblicuidad_previa = float(np.median(
-                        componentes_x[max(0, k - 3):k]
-                    ))
-                    verticalidad_posterior = float(np.median(
-                        componentes_x[k:min(len(componentes_x), k + 2)]
-                    ))
-                    if oblicuidad_previa >= 0.28 and verticalidad_posterior <= 0.20:
-                        fin_elegido = inicio_elegido + k
-                        break
-
             indices = np.arange(inicio_elegido, fin_elegido + 1)
-            indice_azul = indices[np.argmin(y[indices])]
-            indice_rojo = indices[np.argmax(y[indices])]
+            # En el extremo superior izquierdo, los ejemplos ubican el codo
+            # una muestra antes de la meseta: todavía sobre la transferencia.
+            # Los otros tres extremos se conservan completos. En particular,
+            # el azul derecho debe llegar al pie de la transferencia y no ser
+            # elevado por una rodilla de golpe/compresion.
+            orden_carga = indices[np.argsort(y[indices])]
+            indice_azul = orden_carga[0]
+            recorte_rojo = 1 if lado == "izquierda" and len(orden_carga) >= 5 else 0
+            indice_rojo = orden_carga[-1 - recorte_rojo]
+
+            # En la derecha la rama descendente continúa, después de la
+            # transferencia, por la envolvente inferior. El codo azul es el
+            # primer quiebre sostenido de una dirección vertical/oblicua a
+            # una dirección predominantemente horizontal; no necesariamente
+            # coincide con la carga mínima del lateral.
+            if lado == "derecha":
+                inicio_busqueda = int(indice_rojo)
+                fin_busqueda = inicio_busqueda
+                while fin_busqueda + 1 < len(x) and mascara[fin_busqueda + 1]:
+                    fin_busqueda += 1
+                if fin_busqueda - inicio_busqueda >= 4:
+                    tramo_busqueda = puntos[inicio_busqueda:fin_busqueda + 1]
+                    vec = np.diff(tramo_busqueda, axis=0)
+                    norma_vec = np.linalg.norm(vec, axis=1)
+                    componente_vertical = np.zeros(len(vec), dtype=float)
+                    ok_vec = norma_vec > 1e-9
+                    componente_vertical[ok_vec] = (
+                        np.abs(vec[ok_vec, 1]) / norma_vec[ok_vec]
+                    )
+                    for k in range(2, len(componente_vertical) - 1):
+                        antes = float(np.median(componente_vertical[max(0, k - 2):k]))
+                        despues = float(np.median(componente_vertical[k:min(len(componente_vertical), k + 2)]))
+                        if antes >= 0.55 and despues <= 0.42:
+                            indice_azul = inicio_busqueda + k
+                            break
             return (
                 float(x[indice_azul]), float(y[indice_azul]),
                 float(x[indice_rojo]), float(y[indice_rojo]),
@@ -8132,6 +8138,101 @@ def procesar_json(
                         "alineación y condiciones mecánicas"
                     )
                     diagnosticos_cartas.at[indice, "Confianza"] = 0.62
+
+
+    # ============================================================
+    # INVALIDACIÓN FINAL: SIN TRABAJO O CARTA NULA
+    # ============================================================
+    # Esta etapa es deliberadamente posterior a todas las correcciones y
+    # diagnósticos. Así ninguna rutina anterior puede volver a poblar carta
+    # patrón, llenado o sumergencia para una carta sin trabajo hidráulico o
+    # geométricamente nula. Los valores originales permanecen en ``datos`` y
+    # ``muestra`` como entrada auditable, pero no se publican como resultados.
+    mascara_sin_calculo = (
+        diagnosticos_cartas["Sin_Trabajo_Bomba"].fillna(False)
+        | diagnosticos_cartas["Carta_No_Valida"].fillna(False)
+    )
+    ids_sin_calculo = set(
+        diagnosticos_cartas.loc[
+            mascara_sin_calculo, "CartaId"
+        ].astype(int)
+    )
+    motivo_sin_calculo = "SIN_TRABAJO_DE_BOMBA_O_CARTA_NO_VALIDA"
+
+    columnas_numericas_invalidar = {
+        # Llenado y derivados directos del llenado.
+        "Llenado_Bruto_pct",
+        "Llenado_Original_pct",
+        "Llenado_Operativo_pct",
+        "Llenado_Calculado_pct",
+        "Llenado_Usado_pct",
+        "Llenado_API_pct",
+        "Llenado_Implicito_Carrera_Efectiva_pct",
+        "Carrera_Efectiva_Fondo_Calculada_pulg",
+        "Desplazamiento_Bruto_Efectivo_Calculado_m3_d",
+        "Escurrimiento_Calculado_m3_d",
+        # Carta patrón.
+        "Area_Ideal",
+        "Angulo_Ideal_Izquierdo_deg",
+        "Angulo_Ideal_Derecho_deg",
+        # Sumergencia propia, SAM, peso y presiones derivadas.
+        "Peso_Fluido_Horizontales_lbf",
+        "Carga_Hidraulica_Efectiva_lbf",
+        "Presion_Diferencial_Horizontales_psi",
+        "Sumergencia_Propia_m",
+        "Sumergencia_Relativa_Propia_pct",
+        "Nivel_Dinamico_Propio_m",
+        "Delta_Sumergencia_Propia_vs_API_m",
+        "Carga_Roja_Izquierda_SAM_Modificado_lbf",
+        "Carga_Roja_Derecha_SAM_Modificado_lbf",
+        "Carga_Azul_Izquierda_SAM_Modificado_lbf",
+        "Carga_Azul_Derecha_SAM_Modificado_lbf",
+        "Posicion_Roja_Izquierda_SAM_Modificado_pulg",
+        "Posicion_Roja_Derecha_SAM_Modificado_pulg",
+        "Posicion_Azul_Izquierda_SAM_Modificado_pulg",
+        "Posicion_Azul_Derecha_SAM_Modificado_pulg",
+        "Carga_Superior_SAM_Seleccionada_lbf",
+        "Carga_Inferior_SAM_Seleccionada_lbf",
+        "Peso_Fluido_SAM_Seleccionado_lbf",
+        "Diferencial_Carga_SAM_psi",
+        "Presion_Descarga_Bomba_SAM_psi",
+        "PIP_SAM_Seleccionado_psi",
+        "Sumergencia_SAM_Seleccionada_m",
+        "Sumergencia_Relativa_SAM_Seleccionada_pct",
+        "Nivel_Dinamico_SAM_Modificado_m",
+        "Delta_Sumergencia_SAM_Seleccionada_vs_API_m",
+        # La API se conserva en la entrada, pero no se expone como resultado
+        # de estas cartas en la tabla diagnóstica.
+        "Sumergencia_API_m",
+        "Sumergencia_Relativa_pct",
+    }
+
+    for tabla in (resultados_cartas, base_diagnosticos, diagnosticos_cartas):
+        if tabla.empty or "CartaId" not in tabla.columns:
+            continue
+        mascara_tabla = tabla["CartaId"].astype(int).isin(ids_sin_calculo)
+        columnas_presentes = [
+            columna for columna in columnas_numericas_invalidar
+            if columna in tabla.columns
+        ]
+        if columnas_presentes:
+            tabla.loc[mascara_tabla, columnas_presentes] = np.nan
+        if "Vertices_Ideal" in tabla.columns:
+            tabla.loc[mascara_tabla, "Vertices_Ideal"] = None
+        if "Calculo_SAM_Modificado_Valido" in tabla.columns:
+            tabla.loc[mascara_tabla, "Calculo_SAM_Modificado_Valido"] = False
+        if "Motivo_SAM_Modificado_No_Valido" in tabla.columns:
+            tabla.loc[
+                mascara_tabla, "Motivo_SAM_Modificado_No_Valido"
+            ] = motivo_sin_calculo
+        if "Calculo_Sumergencia_Propia_Valido" in tabla.columns:
+            tabla.loc[
+                mascara_tabla, "Calculo_Sumergencia_Propia_Valido"
+            ] = False
+        if "Motivo_Sumergencia_Propia_No_Valida" in tabla.columns:
+            tabla.loc[
+                mascara_tabla, "Motivo_Sumergencia_Propia_No_Valida"
+            ] = motivo_sin_calculo
 
 
     print(

@@ -46,7 +46,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-13-sam-modificado-analisis-sumergencia-v52"
+    "2026-08-13-filtro-sumergencia-v55"
 )
 
 COLORES = {
@@ -1146,6 +1146,24 @@ filtro_individual = st.sidebar.multiselect(
     diagnosticos_disponibles,
     help="Puede incluir diagnósticos débiles observados una o dos veces.",
 )
+modo_sumergencia = st.sidebar.selectbox(
+    "Sumergencia SAM Modificado",
+    ["Todas", "Sólo negativas", "Rango personalizado"],
+    help=(
+        "Filtra por la sumergencia relativa calculada por SAM Modificado. "
+        "Las cartas sin cálculo válido se excluyen cuando está activo."
+    ),
+)
+limite_sumergencia_min = None
+limite_sumergencia_max = None
+if modo_sumergencia == "Rango personalizado":
+    columna_limite_izq, columna_limite_der = st.sidebar.columns(2)
+    limite_sumergencia_min = columna_limite_izq.number_input(
+        "Mínimo [%]", value=-100.0, step=5.0
+    )
+    limite_sumergencia_max = columna_limite_der.number_input(
+        "Máximo [%]", value=100.0, step=5.0
+    )
 
 mascara_pozos = pd.Series(True, index=resumen_robusto_total.index)
 if filtro_robusto:
@@ -1177,16 +1195,42 @@ if filtro_individual:
             lambda xs: any(d in xs for d in filtro_individual)
         )
     ].copy()
-    pozos_filtrados = sorted(
-        cartas_filtradas["Pozo"].dropna().unique()
-    )
 else:
     cartas_filtradas = cartas_candidatas.copy()
-    pozos_filtrados = pozos_candidatos
+
+if modo_sumergencia != "Todas":
+    sumergencia_filtro = pd.to_numeric(
+        cartas_filtradas.get(
+            "Sumergencia_Relativa_SAM_Seleccionada_pct",
+            pd.Series(np.nan, index=cartas_filtradas.index),
+        ),
+        errors="coerce",
+    )
+    if modo_sumergencia == "Sólo negativas":
+        mascara_sumergencia = sumergencia_filtro < 0.0
+    else:
+        minimo_elegido = min(
+            float(limite_sumergencia_min),
+            float(limite_sumergencia_max),
+        )
+        maximo_elegido = max(
+            float(limite_sumergencia_min),
+            float(limite_sumergencia_max),
+        )
+        mascara_sumergencia = sumergencia_filtro.between(
+            minimo_elegido, maximo_elegido, inclusive="both"
+        )
+    cartas_filtradas = cartas_filtradas.loc[
+        mascara_sumergencia.fillna(False)
+    ].copy()
+
+pozos_filtrados = sorted(
+    cartas_filtradas["Pozo"].dropna().unique()
+)
 
 # El resumen y el detalle conservan todas las cartas de los pozos
 # resultantes. El explorador muestra solamente las cartas que cumplen
-# el filtro individual.
+# los filtros individuales de diagnóstico y sumergencia.
 cartas_contexto = historico.loc[
     historico["Pozo"].isin(pozos_filtrados)
 ].copy()
