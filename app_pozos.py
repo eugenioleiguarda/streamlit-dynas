@@ -46,7 +46,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-14-v2-sombra-sumergencia-graficos-v66"
+    "2026-08-14-v2-sumergencia-respaldo-app-v67"
 )
 
 COLORES = {
@@ -291,7 +291,14 @@ def excluir_vfm_cartas_invalidas(salida, produccion):
     ].drop(columns="Hay_Carta_Valida")
 
 
-def construir_tabla_cartas(salida, produccion, controles):
+def construir_tabla_cartas(
+    salida,
+    produccion,
+    controles,
+    presion_tubing_kg_cm2=10.0,
+    presion_casing_kg_cm2=10.0,
+    gradiente_psi_m=1.411,
+):
     muestra = salida["muestra"].copy()
     diagnosticos = salida["diagnosticos_cartas"].copy()
 
@@ -339,6 +346,64 @@ def construir_tabla_cartas(salida, produccion, controles):
         how="left",
         suffixes=("", "_API"),
     )
+
+    # Respaldo contra módulos retenidos por Streamlit entre redeploys. Si
+    # llegaron el peso y los puntos V2 pero no su sumergencia, la app la
+    # reconstruye con las mismas hipótesis globales del pipeline.
+    peso_v2 = pd.to_numeric(
+        tabla.get(
+            "Peso_Fluido_SAM_V2_lbf",
+            pd.Series(np.nan, index=tabla.index),
+        ), errors="coerce",
+    )
+    profundidad_v2 = pd.to_numeric(
+        tabla.get(
+            "Profundidad_Bomba_m",
+            tabla.get(
+                "ProfundidadBomba",
+                pd.Series(np.nan, index=tabla.index),
+            ),
+        ), errors="coerce",
+    )
+    diametro_v2 = pd.to_numeric(
+        tabla.get(
+            "Diametro_Piston_pulg",
+            tabla.get(
+                "DiametroPistonBomba",
+                pd.Series(np.nan, index=tabla.index),
+            ),
+        ), errors="coerce",
+    )
+    area_v2 = np.pi * diametro_v2.pow(2) / 4.0
+    gradiente_v2 = float(gradiente_psi_m)
+    presion_descarga_v2 = (
+        float(presion_tubing_kg_cm2) * 14.223343307
+        + gradiente_v2 * profundidad_v2
+    )
+    pip_v2 = presion_descarga_v2 - peso_v2 / area_v2
+    sumergencia_v2_respaldo = (
+        pip_v2 - float(presion_casing_kg_cm2) * 14.223343307
+    ) / gradiente_v2
+    valida_v2 = (
+        peso_v2.gt(0)
+        & profundidad_v2.gt(0)
+        & diametro_v2.gt(0)
+        & np.isfinite(sumergencia_v2_respaldo)
+    )
+    for campo, respaldo in (
+        ("Sumergencia_SAM_V2_m", sumergencia_v2_respaldo),
+        (
+            "Sumergencia_Relativa_SAM_V2_pct",
+            100.0 * sumergencia_v2_respaldo / profundidad_v2,
+        ),
+    ):
+        existente = pd.to_numeric(
+            tabla.get(campo, pd.Series(np.nan, index=tabla.index)),
+            errors="coerce",
+        )
+        tabla[campo] = existente.where(
+            existente.notna(), respaldo.where(valida_v2)
+        )
 
     # La carrera geométrica propia es el recorrido total medido por la
     # propia carta de fondo: máximo(PosicionesFondo) - mínimo(PosicionesFondo).
@@ -1132,7 +1197,14 @@ with st.spinner("Procesando cartas, diagnósticos y VFM…"):
                 salida,
                 ejecutar_vfm(contenido),
             )
-            tabla = construir_tabla_cartas(salida, produccion, controles)
+            tabla = construir_tabla_cartas(
+                salida,
+                produccion,
+                controles,
+                presion_tubing_kg_cm2=presion_tubing_sam_kg_cm2,
+                presion_casing_kg_cm2=presion_casing_sam_kg_cm2,
+                gradiente_psi_m=gradiente_sam_psi_m,
+            )
             tabla["Archivo_Origen"] = archivo.name
             tabla["Fecha_Referencia_JSON"] = referencia
             tablas.append(tabla)
