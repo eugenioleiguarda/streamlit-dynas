@@ -98,7 +98,16 @@ def _mejor_transferencia(x, y, rx, ry):
     return inferior, superior, confianza
 
 
-def calcular_segmentacion_geometrica_v2(ascendente, descendente):
+def calcular_segmentacion_geometrica_v2(
+    ascendente,
+    descendente,
+    profundidad_bomba_m=np.nan,
+    diametro_piston_pulg=np.nan,
+    presion_tubing_kg_cm2=10.0,
+    presion_casing_kg_cm2=10.0,
+    gravedad_especifica=0.994,
+    gradiente_psi_m=None,
+):
     salida = {
         "Calculo_SAM_V2_Valido": False,
         "Motivo_SAM_V2_No_Valido": "",
@@ -113,6 +122,8 @@ def calcular_segmentacion_geometrica_v2(ascendente, descendente):
         "Carga_Superior_SAM_V2_lbf": np.nan,
         "Carga_Inferior_SAM_V2_lbf": np.nan,
         "Peso_Fluido_SAM_V2_lbf": np.nan,
+        "Sumergencia_SAM_V2_m": np.nan,
+        "Sumergencia_Relativa_SAM_V2_pct": np.nan,
     })
     try:
         xa, ya = _rama(ascendente)
@@ -150,6 +161,27 @@ def calcular_segmentacion_geometrica_v2(ascendente, descendente):
             "Peso_Fluido_SAM_V2_lbf": float(peso),
             "Confianza_SAM_V2": float(min(conf_i, conf_d)),
         })
+        profundidad = float(profundidad_bomba_m)
+        diametro = float(diametro_piston_pulg)
+        gradiente = (
+            float(gradiente_psi_m)
+            if gradiente_psi_m is not None
+            else 0.433 * 3.280839895013123 * float(gravedad_especifica)
+        )
+        if profundidad > 0 and diametro > 0 and gradiente > 0:
+            area = float(np.pi * diametro ** 2 / 4.0)
+            presion_descarga = (
+                float(presion_tubing_kg_cm2) * 14.223343307
+                + gradiente * profundidad
+            )
+            pip = presion_descarga - peso / area
+            sumergencia = (
+                pip - float(presion_casing_kg_cm2) * 14.223343307
+            ) / gradiente
+            salida["Sumergencia_SAM_V2_m"] = float(sumergencia)
+            salida["Sumergencia_Relativa_SAM_V2_pct"] = float(
+                100.0 * sumergencia / profundidad
+            )
     except (TypeError, ValueError) as error:
         salida["Motivo_SAM_V2_No_Valido"] = str(error)
     return salida

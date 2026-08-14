@@ -3923,6 +3923,12 @@ def procesar_json(
             sam_v2_sombra = calcular_segmentacion_geometrica_v2(
                 ascendente=asc,
                 descendente=desc,
+                profundidad_bomba_m=profundidad_bomba_m,
+                diametro_piston_pulg=diametro_piston_pulg,
+                presion_tubing_kg_cm2=presion_tubing_kg_cm2,
+                presion_casing_kg_cm2=presion_casing_kg_cm2,
+                gravedad_especifica=gravedad_especifica_sam,
+                gradiente_psi_m=gradiente_sam_psi_m,
             )
 
             # La distancia entre cruces de la horizontal superior oculta se

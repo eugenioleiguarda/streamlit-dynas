@@ -46,7 +46,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-14-v64-mas-segmentacion-v2-sombra-v65"
+    "2026-08-14-v2-sombra-sumergencia-graficos-v66"
 )
 
 COLORES = {
@@ -1346,6 +1346,10 @@ with tab_resumen:
     for destino, origen in {
         "Sumergencia_SAM_m": "Sumergencia_SAM_Seleccionada_m",
         "Sumergencia_SAM_pct": "Sumergencia_Relativa_SAM_Seleccionada_pct",
+        "Sumergencia_V2_m": "Sumergencia_SAM_V2_m",
+        "Sumergencia_V2_pct": "Sumergencia_Relativa_SAM_V2_pct",
+        "Peso_Fluido_V2_lbf": "Peso_Fluido_SAM_V2_lbf",
+        "Confianza_V2": "Confianza_SAM_V2",
         "Diametro_Piston_pulg": "DiametroPistonBomba",
         "Profundidad_Bomba_m": "ProfundidadBomba",
         "GPM_Analisis": "GPM",
@@ -1395,6 +1399,65 @@ with tab_resumen:
             st.plotly_chart(
                 figura, use_container_width=True,
                 key=f"hist_sumergencia_{nombre}"
+            )
+
+    st.subheader("Comparación inicial con V2 geométrico (modo sombra)")
+    v2_validos = analisis_sumergencia["Sumergencia_V2_pct"].notna()
+    oficial_validos = analisis_sumergencia["Sumergencia_SAM_pct"].notna()
+    comparables_v2 = v2_validos & oficial_validos
+    metricas_v2 = st.columns(5)
+    metricas_v2[0].metric(
+        "Cartas V2", f"{int(v2_validos.sum())} / {len(analisis_sumergencia)}"
+    )
+    metricas_v2[1].metric(
+        "Cobertura V2",
+        valor_texto(100.0 * v2_validos.mean() if len(v2_validos) else np.nan, ".1f", "%"),
+    )
+    metricas_v2[2].metric(
+        "V2 negativas", int((analisis_sumergencia["Sumergencia_V2_pct"] < 0).sum())
+    )
+    metricas_v2[3].metric(
+        "Mediana V2",
+        valor_texto(analisis_sumergencia.loc[v2_validos, "Sumergencia_V2_pct"].median(), ".1f", "%"),
+    )
+    delta_v2 = (
+        analisis_sumergencia.loc[comparables_v2, "Sumergencia_V2_pct"]
+        - analisis_sumergencia.loc[comparables_v2, "Sumergencia_SAM_pct"]
+    )
+    metricas_v2[4].metric(
+        "Mediana V2 − v64", valor_texto(delta_v2.median(), ".1f", " pp")
+    )
+
+    for columna, (nombre, diagnosticos, referencias, color) in zip(
+        st.columns(3), grupos_sumergencia
+    ):
+        valores = analisis_sumergencia.loc[
+            analisis_sumergencia["Diagnostico_Principal"].isin(diagnosticos),
+            "Sumergencia_V2_pct",
+        ].dropna()
+        figura_v2 = go.Figure(go.Histogram(
+            x=valores, nbinsx=28, marker_color=color, opacity=0.82,
+            hovertemplate="Sumergencia V2: %{x:.1f}%<br>Cartas: %{y}<extra></extra>",
+        ))
+        for referencia in referencias:
+            if referencia is not None:
+                figura_v2.add_vline(
+                    x=referencia, line_dash="dash", line_color="#6b7280"
+                )
+        figura_v2.update_layout(
+            title=(
+                f"V2 · {nombre}<br><sup>n={len(valores)} · mediana="
+                f"{valor_texto(valores.median(), '.1f', '%')}</sup>"
+            ),
+            xaxis_title="Sumergencia relativa V2 [%]",
+            yaxis_title="Cartas", height=360,
+            margin=dict(l=15, r=15, t=65, b=45),
+            showlegend=False, template="plotly_white",
+        )
+        with columna:
+            st.plotly_chart(
+                figura_v2, use_container_width=True,
+                key=f"hist_sumergencia_v2_{nombre}",
             )
 
     diagnosticos_graficos = [
