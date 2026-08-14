@@ -46,7 +46,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-14-quiebres-independientes-v63"
+    "2026-08-14-rojo-derecho-transferencia-v64"
 )
 
 COLORES = {

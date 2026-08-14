@@ -422,6 +422,41 @@ def calcular_sam_modificado(
             indice = int(indices[mejor[1]])
             return float(x[indice]), float(y[indice])
 
+        def detectar_recta_superior_derecha(x, y):
+            """Primer punto ya contenido en la transferencia descendente."""
+            x = np.asarray(x, dtype=float)
+            y = np.asarray(y, dtype=float)
+            x_min = float(min(np.min(x_asc), np.min(x_desc)))
+            indices = np.flatnonzero(x >= x_min + 0.45 * rango_x)
+            if len(indices) < 7:
+                return None
+            xx = x[indices] / rango_x
+            yy = y[indices] / rango_y
+            dx = np.diff(xx)
+            dy = np.diff(yy)
+            pendientes = np.full(len(dx), np.nan, dtype=float)
+            validas = dx > 1e-4
+            pendientes[validas] = dy[validas] / dx[validas]
+            # La meseta debe preceder a por lo menos tres segmentos de caída.
+            for k in range(2, len(pendientes) - 2):
+                previas = pendientes[max(0, k - 3):k]
+                futuras = pendientes[k:k + 3]
+                previas = previas[np.isfinite(previas)]
+                futuras = futuras[np.isfinite(futuras)]
+                if len(previas) < 2 or len(futuras) < 2:
+                    continue
+                meseta_previa = float(np.median(np.abs(previas))) <= 0.32
+                caida_sostenida = (
+                    float(np.median(futuras)) <= -0.38
+                    and np.count_nonzero(futuras <= -0.22) >= 2
+                )
+                if meseta_previa and caida_sostenida:
+                    # Una muestra después del cambio: ya está sobre la recta
+                    # de transferencia y no en el codo de la meseta.
+                    indice = int(indices[min(k + 1, len(indices) - 1)])
+                    return float(x[indice]), float(y[indice])
+            return None
+
         try:
             candidato_izquierdo_base = detectar_lateral(
                 x_asc, y_asc, "izquierda"
@@ -854,11 +889,29 @@ def calcular_sam_modificado(
                 propuesta_rojo = (rojo_quiebre_izq, propuesta_rojo[1])
         if (
             habilitar_ajuste_negativos
-            and rectangular_der is not None
             and not traslacion_cuatro_codos
         ):
-            rojo_quiebre_der = rectangular_der[1]
-            if rojo_quiebre_der[1] < propuesta_rojo[1][1] - 0.08 * rango_y:
+            # En cartas con pérdida en viajera, el codo superior derecho
+            # puede quedar sobre la meseta. Priorizamos el primer punto que
+            # ya pertenece a la caída sostenida de transferencia de carga.
+            candidatos_rojo_der = []
+            rojo_transferencia_der = detectar_recta_superior_derecha(
+                x_asc, y_asc
+            )
+            if rojo_transferencia_der is not None:
+                candidatos_rojo_der.append(rojo_transferencia_der)
+            if rectangular_der is not None:
+                candidatos_rojo_der.append(rectangular_der[1])
+            rojo_quiebre_der = (
+                min(candidatos_rojo_der, key=lambda punto: punto[1])
+                if candidatos_rojo_der
+                else None
+            )
+            if (
+                rojo_quiebre_der is not None
+                and rojo_quiebre_der[1]
+                < propuesta_rojo[1][1] - 0.05 * rango_y
+            ):
                 propuesta_rojo = (propuesta_rojo[0], rojo_quiebre_der)
 
         # Salvaguarda hidráulica conservadora: una reconciliación visual no
