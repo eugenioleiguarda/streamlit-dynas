@@ -103,7 +103,10 @@ def calcular_sam_modificado(
             if lado == "izquierda":
                 mascara = x <= x_min_global + 0.52 * rango_x
             else:
-                mascara = x >= x_max_global - 0.52 * rango_x
+                # Incluye transferencias derechas desplazadas hacia el
+                # interior (EG-232), pero la selección sigue exigiendo una
+                # recta consecutiva con transferencia apreciable de carga.
+                mascara = x >= x_max_global - 0.72 * rango_x
             puntos = np.column_stack([
                 (x - x_min_global) / rango_x,
                 (y - np.min(y)) / rango_y,
@@ -212,9 +215,42 @@ def calcular_sam_modificado(
             # el azul derecho debe llegar al pie de la transferencia y no ser
             # elevado por una rodilla de golpe/compresion.
             orden_carga = indices[np.argsort(y[indices])]
-            indice_azul = orden_carga[0]
-            recorte_rojo = 1 if lado == "izquierda" and len(orden_carga) >= 5 else 0
+            recorte_azul = 1 if lado == "derecha" and len(orden_carga) >= 5 else 0
+            indice_azul = orden_carga[recorte_azul]
+            if lado == "izquierda":
+                recorte_rojo = (
+                    3 if len(orden_carga) >= 9
+                    else 2 if len(orden_carga) >= 7
+                    else 1 if len(orden_carga) >= 5
+                    else 0
+                )
+            else:
+                extremo_bajo = puntos[orden_carga[0]]
+                extremo_alto = puntos[orden_carga[-1]]
+                vector_transferencia = extremo_alto - extremo_bajo
+                norma_transferencia = float(np.linalg.norm(
+                    vector_transferencia
+                ))
+                apertura_transferencia = (
+                    abs(float(vector_transferencia[0]))
+                    / norma_transferencia
+                    if norma_transferencia > 1e-9 else 0.0
+                )
+                recorte_rojo = (
+                    0 if apertura_transferencia >= 0.25
+                    else 1 if len(orden_carga) >= 5
+                    else 0
+                )
             indice_rojo = orden_carga[-1 - recorte_rojo]
+            if lado == "derecha" and apertura_transferencia >= 0.25:
+                vecinos_superiores = [indice_rojo]
+                for desplazamiento in (-2, -1, 1, 2):
+                    vecino = int(indice_rojo + desplazamiento)
+                    if 0 <= vecino < len(y) and mascara[vecino]:
+                        vecinos_superiores.append(vecino)
+                indice_rojo = max(
+                    vecinos_superiores, key=lambda vecino: float(y[vecino])
+                )
 
             # En la derecha la rama descendente continúa, después de la
             # transferencia, por la envolvente inferior. El codo azul es el
@@ -368,56 +404,55 @@ def calcular_sam_modificado(
             x_azul_izq, azul_izquierda,
             x_roja_izq, roja_izquierda,
         ) = detectar_lateral(x_asc, y_asc, "izquierda")
-        (
-            x_azul_der, azul_derecha,
-            x_roja_der, roja_derecha,
-        ) = detectar_lateral(x_desc, y_desc, "derecha")
-        # Clasificación geométrica del lateral derecho. Si la rama alta
-        # contiene una transferencia recta detectable, su extremo superior
-        # define el rojo. Cuando esa misma transferencia alcanza la mitad
-        # baja de carga (caso típico de pérdida en viajera), también define el
-        # azul; de lo contrario el azul permanece en la rama descendente.
-        try:
-            (
-                x_azul_der_alta, azul_der_alta,
-                x_roja_der_alta, roja_der_alta,
-            ) = detectar_lateral(x_asc, y_asc, "derecha")
-            umbral_mitad_baja = (
-                float(min(np.min(y_asc), np.min(y_desc))) + 0.55 * rango_y
-            )
-            if azul_der_alta <= umbral_mitad_baja:
-                x_roja_der, roja_derecha = x_roja_der_alta, roja_der_alta
-                x_azul_der, azul_derecha = x_azul_der_alta, azul_der_alta
-            else:
-                # Transferencia alta corta: el hombro pedido es su extremo
-                # inferior, todavía sobre la recta y antes de la meseta.
-                x_roja_der, roja_derecha = x_azul_der_alta, azul_der_alta
-        except ValueError:
-            hombro_superior_derecho = detectar_hombro_superior_derecho(
-                x_asc, y_asc
-            )
-            if hombro_superior_derecho is not None:
-                x_roja_der, roja_derecha = hombro_superior_derecho
-
-        # Subtipo de transferencia larga sin rodilla inferior nítida. Si el
-        # tramo derecho recorre una fracción grande de la carga y atraviesa la
-        # referencia cero, la apertura de la viajera se representa por ese
-        # cruce; los puntos posteriores ya pertenecen a la rama inferior.
-        indices_derecha_desc = np.flatnonzero(
-            x_desc >= float(max(np.max(x_asc), np.max(x_desc))) - 0.45 * rango_x
+        candidatos_derecha = []
+        for x_rama, y_rama, nombre_rama in (
+            (x_desc, y_desc, "descendente"),
+            (x_asc, y_asc, "ascendente"),
+        ):
+            try:
+                candidato = detectar_lateral(x_rama, y_rama, "derecha")
+                amplitud_candidato = abs(candidato[3] - candidato[1])
+                candidatos_derecha.append((
+                    amplitud_candidato, nombre_rama, candidato
+                ))
+            except ValueError:
+                pass
+        if not candidatos_derecha:
+            raise ValueError("TRANSFERENCIA_DERECHA_NO_ENCONTRADA")
+        # La transferencia física domina por carga transferida. Un pequeño
+        # desempate favorece la descendente, que contiene el lateral derecho
+        # convencional; la ascendente gana cuando realmente porta la
+        # transferencia completa (pérdida en viajera).
+        candidatos_derecha.sort(
+            key=lambda item: (
+                item[0], item[1] == "descendente"
+            ),
+            reverse=True,
         )
-        if len(indices_derecha_desc) >= 5:
-            y_derecha_desc = y_desc[indices_derecha_desc]
-            if (
-                np.min(y_derecha_desc) <= 0.0 <= np.max(y_derecha_desc)
-                and np.ptp(y_derecha_desc) >= 0.45 * rango_y
-                and abs(azul_derecha) > 0.08 * rango_y
-            ):
-                indice_cruce = int(indices_derecha_desc[
-                    np.argmin(np.abs(y_derecha_desc))
-                ])
-                x_azul_der = float(x_desc[indice_cruce])
-                azul_derecha = float(y_desc[indice_cruce])
+        (
+            _, _,
+            (
+                x_azul_der, azul_derecha,
+                x_roja_der, roja_derecha,
+            ),
+        ) = candidatos_derecha[0]
+
+        # Si ambas ramas describen transferencias de amplitud similar, se
+        # conserva la exterior: evita que ondulaciones de la meseta compitan
+        # con los laterales reales en cartas EG-10.
+        try:
+            exterior = max(
+                candidatos_derecha,
+                key=lambda item: max(item[2][0], item[2][2]),
+            )
+            amplitud_ganadora = candidatos_derecha[0][0]
+            if exterior[0] >= 0.88 * amplitud_ganadora:
+                (
+                    x_azul_der, azul_derecha,
+                    x_roja_der, roja_derecha,
+                ) = exterior[2]
+        except (ValueError, IndexError):
+            pass
         carga_superior = float(np.mean([roja_izquierda, roja_derecha]))
         carga_inferior = float(np.mean([azul_izquierda, azul_derecha]))
         peso = carga_superior - carga_inferior

@@ -46,7 +46,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-13-laterales-por-geometria-filtros-v58"
+    "2026-08-13-transferencias-comparadas-v59"
 )
 
 COLORES = {
