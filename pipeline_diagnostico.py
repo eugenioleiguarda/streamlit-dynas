@@ -235,13 +235,58 @@ def calcular_sam_modificado(
                     componente_horizontal[ok_vec] = (
                         np.abs(vec[ok_vec, 0]) / norma_vec[ok_vec]
                     )
-                    # Primero debe aparecer el núcleo vertical/oblicuo de la
-                    # transferencia. Luego se toma el comienzo de la apertura
-                    # hacia la rama inferior, una muestra antes del aumento
-                    # sostenido de la componente horizontal. Esto evita caer
-                    # en el mínimo de carga o al final de la rodilla.
-                    vio_nucleo_transferencia = False
+                    # La transferencia puede ser vertical u oblicua. Por eso
+                    # no se usa un umbral absoluto de horizontalidad: se
+                    # estima su dirección basal con los primeros segmentos y
+                    # se busca el primer aumento sostenido de apertura lateral.
+                    # Ese punto todavía pertenece a la transferencia; si el
+                    # giro es abrupto, se conserva la muestra inmediatamente
+                    # anterior al salto.
+                    minimo_apertura = np.inf
+                    indice_minimo_apertura = None
+                    candidatos_codo = []
                     for k in range(1, len(componente_horizontal) - 1):
+                        apertura_actual = float(componente_horizontal[k])
+                        apertura_siguiente = float(componente_horizontal[k + 1])
+                        carga_en_k = float(y[inicio_busqueda + k])
+                        mitad_baja_carga = (
+                            carga_en_k
+                            <= float(min(np.min(y_asc), np.min(y_desc)))
+                            + 0.45 * rango_y
+                        )
+                        if not mitad_baja_carga:
+                            continue
+                        if apertura_actual < minimo_apertura:
+                            minimo_apertura = apertura_actual
+                            indice_minimo_apertura = k
+                            continue
+                        aumento = apertura_actual - minimo_apertura
+                        if (
+                            indice_minimo_apertura is not None
+                            and aumento >= 0.12
+                            and apertura_siguiente >= minimo_apertura + 0.10
+                        ):
+                            if apertura_actual >= 0.45:
+                                indice_codo = indice_minimo_apertura
+                            else:
+                                indice_codo = k
+                            candidatos_codo.append(indice_codo)
+                            break
+
+                    # Estimador complementario para transferencias largas y
+                    # oblicuas: localiza el primer paso sostenido desde un
+                    # núcleo poco lateral hacia una apertura marcada. Ambos
+                    # estimadores describen el mismo fenómeno; se conserva el
+                    # candidato de mayor carga, que es el primero sobre la
+                    # transferencia antes de que se forme la rama inferior.
+                    vio_nucleo = False
+                    for k in range(1, len(componente_horizontal) - 1):
+                        carga_en_k = float(y[inicio_busqueda + k])
+                        mitad_baja_carga = (
+                            carga_en_k
+                            <= float(min(np.min(y_asc), np.min(y_desc)))
+                            + 0.55 * rango_y
+                        )
                         previo = float(np.median(
                             componente_horizontal[max(0, k - 2):k + 1]
                         ))
@@ -250,25 +295,74 @@ def calcular_sam_modificado(
                                 len(componente_horizontal), k + 2
                             )]
                         ))
-                        carga_en_k = float(y[inicio_busqueda + k])
-                        mitad_baja_carga = (
-                            carga_en_k
-                            <= float(min(np.min(y_asc), np.min(y_desc)))
-                            + 0.55 * rango_y
-                        )
-                        if previo <= 0.40 and mitad_baja_carga:
-                            vio_nucleo_transferencia = True
+                        if mitad_baja_carga and previo <= 0.40:
+                            vio_nucleo = True
                         if (
-                            vio_nucleo_transferencia
+                            vio_nucleo
                             and posterior >= 0.45
                             and componente_horizontal[k] >= 0.38
                         ):
-                            indice_azul = inicio_busqueda + max(0, k - 1)
+                            candidatos_codo.append(max(0, k - 1))
                             break
+
+                    if candidatos_codo:
+                        indice_relativo = max(
+                            candidatos_codo,
+                            key=lambda candidato: float(
+                                y[inicio_busqueda + candidato]
+                            ),
+                        )
+                        indice_azul = inicio_busqueda + indice_relativo
             return (
                 float(x[indice_azul]), float(y[indice_azul]),
                 float(x[indice_rojo]), float(y[indice_rojo]),
             )
+
+        def detectar_hombro_superior_derecho(x, y):
+            """Quiebre meseta--caída en una envolvente superior arqueada."""
+            x = np.asarray(x, dtype=float)
+            y = np.asarray(y, dtype=float)
+            x_min_global = float(min(np.min(x_asc), np.min(x_desc)))
+            mascara = x >= x_min_global + 0.42 * rango_x
+            indices = np.flatnonzero(mascara)
+            if len(indices) < 7:
+                return None
+            # La ascendente conserva el orden de adquisición de izquierda a
+            # derecha. En ese orden se ajustan una meseta y una caída, con un
+            # punto compartido que representa el hombro físico.
+            xx = (x[indices] - x_min_global) / rango_x
+            yy = (y[indices] - min(np.min(y_asc), np.min(y_desc))) / rango_y
+            mejor = None
+            for corte in range(3, len(indices) - 2):
+                x_pre, y_pre = xx[:corte + 1], yy[:corte + 1]
+                x_post, y_post = xx[corte:], yy[corte:]
+                if np.ptp(x_pre) <= 1e-6 or np.ptp(x_post) <= 1e-6:
+                    continue
+                coef_pre = np.polyfit(x_pre, y_pre, 1)
+                coef_post = np.polyfit(x_post, y_post, 1)
+                pendiente_pre = float(coef_pre[0])
+                pendiente_post = float(coef_post[0])
+                # Tipo arqueado: antes casi horizontal o suavemente variable;
+                # después una pérdida sostenida de carga hacia la derecha.
+                if pendiente_post >= -0.35:
+                    continue
+                if pendiente_post >= pendiente_pre - 0.25:
+                    continue
+                residuo = float(np.mean(
+                    (y_pre - np.polyval(coef_pre, x_pre)) ** 2
+                ) + np.mean(
+                    (y_post - np.polyval(coef_post, x_post)) ** 2
+                ))
+                caida = float(y_pre[-1] - y_post[-1])
+                if caida < 0.10:
+                    continue
+                score = residuo + 0.015 * abs(pendiente_pre)
+                if mejor is None or score < mejor[0]:
+                    mejor = (score, corte)
+            if mejor is None:
+                return None
+            indice = int(indices[mejor[1]])
+            return float(x[indice]), float(y[indice])
 
         (
             x_azul_izq, azul_izquierda,
@@ -278,6 +372,52 @@ def calcular_sam_modificado(
             x_azul_der, azul_derecha,
             x_roja_der, roja_derecha,
         ) = detectar_lateral(x_desc, y_desc, "derecha")
+        # Clasificación geométrica del lateral derecho. Si la rama alta
+        # contiene una transferencia recta detectable, su extremo superior
+        # define el rojo. Cuando esa misma transferencia alcanza la mitad
+        # baja de carga (caso típico de pérdida en viajera), también define el
+        # azul; de lo contrario el azul permanece en la rama descendente.
+        try:
+            (
+                x_azul_der_alta, azul_der_alta,
+                x_roja_der_alta, roja_der_alta,
+            ) = detectar_lateral(x_asc, y_asc, "derecha")
+            umbral_mitad_baja = (
+                float(min(np.min(y_asc), np.min(y_desc))) + 0.55 * rango_y
+            )
+            if azul_der_alta <= umbral_mitad_baja:
+                x_roja_der, roja_derecha = x_roja_der_alta, roja_der_alta
+                x_azul_der, azul_derecha = x_azul_der_alta, azul_der_alta
+            else:
+                # Transferencia alta corta: el hombro pedido es su extremo
+                # inferior, todavía sobre la recta y antes de la meseta.
+                x_roja_der, roja_derecha = x_azul_der_alta, azul_der_alta
+        except ValueError:
+            hombro_superior_derecho = detectar_hombro_superior_derecho(
+                x_asc, y_asc
+            )
+            if hombro_superior_derecho is not None:
+                x_roja_der, roja_derecha = hombro_superior_derecho
+
+        # Subtipo de transferencia larga sin rodilla inferior nítida. Si el
+        # tramo derecho recorre una fracción grande de la carga y atraviesa la
+        # referencia cero, la apertura de la viajera se representa por ese
+        # cruce; los puntos posteriores ya pertenecen a la rama inferior.
+        indices_derecha_desc = np.flatnonzero(
+            x_desc >= float(max(np.max(x_asc), np.max(x_desc))) - 0.45 * rango_x
+        )
+        if len(indices_derecha_desc) >= 5:
+            y_derecha_desc = y_desc[indices_derecha_desc]
+            if (
+                np.min(y_derecha_desc) <= 0.0 <= np.max(y_derecha_desc)
+                and np.ptp(y_derecha_desc) >= 0.45 * rango_y
+                and abs(azul_derecha) > 0.08 * rango_y
+            ):
+                indice_cruce = int(indices_derecha_desc[
+                    np.argmin(np.abs(y_derecha_desc))
+                ])
+                x_azul_der = float(x_desc[indice_cruce])
+                azul_derecha = float(y_desc[indice_cruce])
         carga_superior = float(np.mean([roja_izquierda, roja_derecha]))
         carga_inferior = float(np.mean([azul_izquierda, azul_derecha]))
         peso = carga_superior - carga_inferior

@@ -46,7 +46,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-13-codo-inferior-derecho-v56"
+    "2026-08-13-laterales-por-geometria-filtros-v58"
 )
 
 COLORES = {
@@ -1280,7 +1280,10 @@ with tab_resumen:
         "Distribución de sumergencia relativa para golpe/compresión, "
         "pozo subexplotado y pozo bien explotado."
     )
-    analisis_sumergencia = cartas_contexto.copy()
+    # Todos los gráficos se construyen sobre las cartas que superaron cada
+    # filtro activo (pozo, diagnóstico individual y sumergencia). El contexto
+    # histórico completo queda reservado para el resumen y el detalle.
+    analisis_sumergencia = cartas_filtradas.copy()
     for destino, origen in {
         "Sumergencia_SAM_m": "Sumergencia_SAM_Seleccionada_m",
         "Sumergencia_SAM_pct": "Sumergencia_Relativa_SAM_Seleccionada_pct",
@@ -1469,15 +1472,15 @@ with tab_resumen:
         # serie completa de NaN y la comparación muestre cobertura cero.
         serie_vacia = pd.Series(
             np.nan,
-            index=cartas_contexto.index,
+            index=cartas_filtradas.index,
             dtype=float,
         )
         valor_api = pd.to_numeric(
-            cartas_contexto.get(campo_api, serie_vacia),
+            cartas_filtradas.get(campo_api, serie_vacia),
             errors="coerce",
         )
         valor_calculado = pd.to_numeric(
-            cartas_contexto.get(campo_calculado, serie_vacia),
+            cartas_filtradas.get(campo_calculado, serie_vacia),
             errors="coerce",
         )
         mascara = valor_api.notna() & valor_calculado.notna()
