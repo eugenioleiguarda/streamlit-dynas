@@ -154,7 +154,29 @@ def calcular_sam_modificado(
                     if mejor is None or score > mejor[0]:
                         mejor = (score, inicio, fin)
             if mejor is None:
-                raise ValueError("RECTA_TRANSFERENCIA_NO_ENCONTRADA")
+                # Respaldo acotado para cartas cortas: exige tres muestras
+                # consecutivas, transferencia apreciable y predominio de
+                # carga. Solo entra cuando el ajuste auditable principal no
+                # encontró ninguna recta, por lo que no altera cartas ya
+                # resueltas.
+                for inicio in range(len(puntos) - 2):
+                    for fin in range(inicio + 2, min(len(puntos), inicio + 6)):
+                        if not np.all(mascara[inicio:fin + 1]):
+                            continue
+                        tramo = puntos[inicio:fin + 1]
+                        amplitud = float(np.ptp(tramo[:, 1]))
+                        delta = tramo[-1] - tramo[0]
+                        norma = float(np.linalg.norm(delta))
+                        if amplitud < 0.075 or norma <= 1e-9:
+                            continue
+                        verticalidad = abs(float(delta[1])) / norma
+                        if verticalidad < 0.42:
+                            continue
+                        score = amplitud * (0.6 + verticalidad)
+                        if mejor is None or score > mejor[0]:
+                            mejor = (score, inicio, fin)
+                if mejor is None:
+                    raise ValueError("RECTA_TRANSFERENCIA_NO_ENCONTRADA")
             inicio_elegido, fin_elegido = mejor[1], mejor[2]
 
             # Recorta los extremos redondeados que todavia pueden caber en un
@@ -400,10 +422,16 @@ def calcular_sam_modificado(
             indice = int(indices[mejor[1]])
             return float(x[indice]), float(y[indice])
 
+        candidato_izquierdo_base = detectar_lateral(
+            x_asc, y_asc, "izquierda"
+        )
+        candidatos_izquierda = [
+            ("ascendente", candidato_izquierdo_base)
+        ]
         (
             x_azul_izq, azul_izquierda,
             x_roja_izq, roja_izquierda,
-        ) = detectar_lateral(x_asc, y_asc, "izquierda")
+        ) = candidato_izquierdo_base
         candidatos_derecha = []
         for x_rama, y_rama, nombre_rama in (
             (x_desc, y_desc, "descendente"),
@@ -453,6 +481,132 @@ def calcular_sam_modificado(
                 ) = exterior[2]
         except (ValueError, IndexError):
             pass
+
+        # Reconciliación independiente de las cuatro esquinas. La selección
+        # base v59 se conserva salvo que otra pareja de extremos mejore de
+        # manera material la alineación entre lados. Los azules desempatan
+        # hacia menor carga (extremos inferiores); los rojos hacia mayor carga
+        # y, débilmente, hacia el corredor exterior derecho.
+        candidatos_azules_izq = [
+            (candidato[0], candidato[1])
+            for _, candidato in candidatos_izquierda
+        ]
+        candidatos_rojos_izq = [
+            (candidato[2], candidato[3])
+            for _, candidato in candidatos_izquierda
+        ]
+        # Candidatos locales baratos alrededor del mínimo geométrico. Permiten
+        # que un codo izquierdo pertenezca al tramo contiguo de la otra carrera
+        # sin ejecutar una cuarta búsqueda exhaustiva de rectas.
+        x_min_global = float(min(np.min(x_asc), np.min(x_desc)))
+        for x_rama, y_rama, indices_locales in (
+            (x_asc, y_asc, range(0, min(8, len(x_asc)))),
+            (
+                x_desc, y_desc,
+                range(max(0, len(x_desc) - 8), len(x_desc)),
+            ),
+        ):
+            for indice_local in indices_locales:
+                if x_rama[indice_local] <= x_min_global + 0.14 * rango_x:
+                    punto_local = (
+                        float(x_rama[indice_local]),
+                        float(y_rama[indice_local]),
+                    )
+                    candidatos_azules_izq.append(punto_local)
+                    candidatos_rojos_izq.append(punto_local)
+        candidatos_azules_der = [
+            (item[2][0], item[2][1]) for item in candidatos_derecha
+        ]
+        candidatos_rojos_der = [
+            (item[2][2], item[2][3]) for item in candidatos_derecha
+        ]
+
+        y_min_global = float(min(np.min(y_asc), np.min(y_desc)))
+        y_max_global = float(max(np.max(y_asc), np.max(y_desc)))
+        x_max_global = float(max(np.max(x_asc), np.max(x_desc)))
+
+        def score_azul(izquierdo, derecho):
+            media = 0.5 * (izquierdo[1] + derecho[1])
+            return (
+                abs(izquierdo[1] - derecho[1]) / rango_y
+                + 0.045 * (media - y_min_global) / rango_y
+            )
+
+        def score_rojo(izquierdo, derecho):
+            media = 0.5 * (izquierdo[1] + derecho[1])
+            exterioridad = max(0.0, (x_max_global - derecho[0]) / rango_x)
+            return (
+                abs(izquierdo[1] - derecho[1]) / rango_y
+                + 0.035 * (y_max_global - media) / rango_y
+                + 0.08 * exterioridad
+            )
+
+        actual_azul = (
+            (x_azul_izq, azul_izquierda),
+            (x_azul_der, azul_derecha),
+        )
+        original_azul = actual_azul
+        mejor_azul = min(
+            (
+                (izquierdo, derecho)
+                for izquierdo in candidatos_azules_izq
+                for derecho in candidatos_azules_der
+            ),
+            key=lambda pareja: score_azul(*pareja),
+        )
+        mejora_azul = (
+            score_azul(*actual_azul) - score_azul(*mejor_azul)
+        )
+        media_actual_azul = 0.5 * (
+            azul_izquierda + azul_derecha
+        )
+        ambos_azules_altos = (
+            media_actual_azul > y_min_global + 0.55 * rango_y
+        )
+        propuesta_azul = (
+            mejor_azul
+            if mejora_azul >= 0.025 or ambos_azules_altos
+            else actual_azul
+        )
+
+        actual_rojo = (
+            (x_roja_izq, roja_izquierda),
+            (x_roja_der, roja_derecha),
+        )
+        original_rojo = actual_rojo
+        mejor_rojo = min(
+            (
+                (izquierdo, derecho)
+                for izquierdo in candidatos_rojos_izq
+                for derecho in candidatos_rojos_der
+            ),
+            key=lambda pareja: score_rojo(*pareja),
+        )
+        propuesta_rojo = (
+            mejor_rojo
+            if score_rojo(*actual_rojo) - score_rojo(*mejor_rojo) >= 0.035
+            else actual_rojo
+        )
+
+        # Salvaguarda hidráulica conservadora: una reconciliación visual no
+        # puede aumentar materialmente el peso de fluido respecto del método
+        # ya validado. Así los candidatos independientes corrigen sesgos
+        # negativos, pero no convierten cartas antes razonables en negativas.
+        peso_original = (
+            0.5 * (original_rojo[0][1] + original_rojo[1][1])
+            - 0.5 * (original_azul[0][1] + original_azul[1][1])
+        )
+        peso_propuesto = (
+            0.5 * (propuesta_rojo[0][1] + propuesta_rojo[1][1])
+            - 0.5 * (propuesta_azul[0][1] + propuesta_azul[1][1])
+        )
+        if 0 < peso_propuesto <= peso_original + 1e-9:
+            (x_azul_izq, azul_izquierda), (
+                x_azul_der, azul_derecha
+            ) = propuesta_azul
+            (x_roja_izq, roja_izquierda), (
+                x_roja_der, roja_derecha
+            ) = propuesta_rojo
         carga_superior = float(np.mean([roja_izquierda, roja_derecha]))
         carga_inferior = float(np.mean([azul_izquierda, azul_derecha]))
         peso = carga_superior - carga_inferior
