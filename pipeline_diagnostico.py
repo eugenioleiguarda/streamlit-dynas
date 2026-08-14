@@ -663,10 +663,10 @@ def calcular_sam_modificado(
         rectangular_der = extremos_lateral_recto(
             x_ciclo, y_ciclo, "derecha"
         )
+        traslacion_cuatro_codos = False
         if rectangular_izq is not None and rectangular_der is not None:
             azul_rect_izq, rojo_rect_izq = rectangular_izq
             azul_rect_der, rojo_rect_der = rectangular_der
-            traslacion_cuatro_codos = False
             desplazamientos_crudos = np.asarray([
                 actual_rojo[0][1] - rojo_rect_izq[1],
                 actual_rojo[1][1] - rojo_rect_der[1],
@@ -773,6 +773,93 @@ def calcular_sam_modificado(
             ):
                 propuesta_azul = (azul_rect_izq, azul_rect_der)
                 propuesta_rojo = (rojo_rect_izq, rojo_rect_der)
+
+        # Los ajustes independientes se reservan para cartas cuya solución
+        # conservadora previa todavía arroja sumergencia negativa. Así no se
+        # reabren cartas positivas que ya habían quedado validadas.
+        peso_original_previo = (
+            0.5 * (original_rojo[0][1] + original_rojo[1][1])
+            - 0.5 * (original_azul[0][1] + original_azul[1][1])
+        )
+        peso_propuesta_previa = (
+            0.5 * (propuesta_rojo[0][1] + propuesta_rojo[1][1])
+            - 0.5 * (propuesta_azul[0][1] + propuesta_azul[1][1])
+        )
+        peso_base_previo = (
+            peso_propuesta_previa
+            if 0 < peso_propuesta_previa <= peso_original_previo + 1e-9
+            else peso_original_previo
+        )
+        habilitar_ajuste_negativos = False
+        try:
+            profundidad_previa = float(profundidad_bomba_m)
+            diametro_previo = float(diametro_piston_pulg)
+            area_previa = float(np.pi * diametro_previo ** 2 / 4.0)
+            gradiente_previo = pd.to_numeric(gradiente_psi_m, errors="coerce")
+            if not np.isfinite(gradiente_previo) or gradiente_previo <= 0:
+                gradiente_previo = (
+                    PSI_PIE_AGUA * PIES_POR_METRO * float(gravedad_especifica)
+                )
+            pd_previa = (
+                float(presion_tubing_kg_cm2) * KG_CM2_A_PSI
+                + gradiente_previo * profundidad_previa
+            )
+            pip_previa = pd_previa - peso_base_previo / area_previa
+            sumergencia_previa = (
+                pip_previa
+                - float(presion_casing_kg_cm2) * KG_CM2_A_PSI
+            ) / gradiente_previo
+            habilitar_ajuste_negativos = sumergencia_previa < 0
+        except (TypeError, ValueError, ZeroDivisionError):
+            habilitar_ajuste_negativos = False
+
+        # Correcciones independientes que solo reducen el peso calculado.
+        # 1) El azul derecho no puede quedar en el extremo inferior cuando
+        # existe un quiebre lateral claramente más alto.
+        if (
+            habilitar_ajuste_negativos
+            and rectangular_der is not None
+            and not traslacion_cuatro_codos
+        ):
+            mascara_quiebre_der = (
+                x_ciclo >= x_max_global - 0.20 * rango_x
+            )
+            indices_quiebre_der = np.flatnonzero(mascara_quiebre_der)
+            objetivo_quiebre_der = max(
+                y_min_global + 0.30 * rango_y,
+                -0.05 * rango_y,
+            )
+            indice_quiebre_der = int(indices_quiebre_der[np.argmin(
+                abs(y_ciclo[indices_quiebre_der] - objetivo_quiebre_der)
+            )])
+            azul_quiebre_der = (
+                float(x_ciclo[indice_quiebre_der]),
+                float(y_ciclo[indice_quiebre_der]),
+            )
+            if azul_quiebre_der[1] > propuesta_azul[1][1] + 0.08 * rango_y:
+                propuesta_azul = (
+                    propuesta_azul[0], azul_quiebre_der
+                )
+
+        # 2) En cartas arqueadas, recorta cada rojo hasta el corredor interior
+        # del lateral. Nunca eleva un rojo ni prolonga la pendiente hacia la
+        # envolvente inferior.
+        if (
+            habilitar_ajuste_negativos
+            and rectangular_izq is not None
+            and not traslacion_cuatro_codos
+        ):
+            rojo_quiebre_izq = rectangular_izq[1]
+            if rojo_quiebre_izq[1] < propuesta_rojo[0][1] - 0.08 * rango_y:
+                propuesta_rojo = (rojo_quiebre_izq, propuesta_rojo[1])
+        if (
+            habilitar_ajuste_negativos
+            and rectangular_der is not None
+            and not traslacion_cuatro_codos
+        ):
+            rojo_quiebre_der = rectangular_der[1]
+            if rojo_quiebre_der[1] < propuesta_rojo[1][1] - 0.08 * rango_y:
+                propuesta_rojo = (propuesta_rojo[0], rojo_quiebre_der)
 
         # Salvaguarda hidráulica conservadora: una reconciliación visual no
         # puede aumentar materialmente el peso de fluido respecto del método
