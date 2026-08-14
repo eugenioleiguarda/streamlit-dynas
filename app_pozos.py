@@ -46,7 +46,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-13-filtro-sumergencia-v55"
+    "2026-08-13-codo-inferior-derecho-v56"
 )
 
 COLORES = {

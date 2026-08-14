@@ -230,16 +230,40 @@ def calcular_sam_modificado(
                     tramo_busqueda = puntos[inicio_busqueda:fin_busqueda + 1]
                     vec = np.diff(tramo_busqueda, axis=0)
                     norma_vec = np.linalg.norm(vec, axis=1)
-                    componente_vertical = np.zeros(len(vec), dtype=float)
+                    componente_horizontal = np.zeros(len(vec), dtype=float)
                     ok_vec = norma_vec > 1e-9
-                    componente_vertical[ok_vec] = (
-                        np.abs(vec[ok_vec, 1]) / norma_vec[ok_vec]
+                    componente_horizontal[ok_vec] = (
+                        np.abs(vec[ok_vec, 0]) / norma_vec[ok_vec]
                     )
-                    for k in range(2, len(componente_vertical) - 1):
-                        antes = float(np.median(componente_vertical[max(0, k - 2):k]))
-                        despues = float(np.median(componente_vertical[k:min(len(componente_vertical), k + 2)]))
-                        if antes >= 0.55 and despues <= 0.42:
-                            indice_azul = inicio_busqueda + k
+                    # Primero debe aparecer el núcleo vertical/oblicuo de la
+                    # transferencia. Luego se toma el comienzo de la apertura
+                    # hacia la rama inferior, una muestra antes del aumento
+                    # sostenido de la componente horizontal. Esto evita caer
+                    # en el mínimo de carga o al final de la rodilla.
+                    vio_nucleo_transferencia = False
+                    for k in range(1, len(componente_horizontal) - 1):
+                        previo = float(np.median(
+                            componente_horizontal[max(0, k - 2):k + 1]
+                        ))
+                        posterior = float(np.median(
+                            componente_horizontal[k:min(
+                                len(componente_horizontal), k + 2
+                            )]
+                        ))
+                        carga_en_k = float(y[inicio_busqueda + k])
+                        mitad_baja_carga = (
+                            carga_en_k
+                            <= float(min(np.min(y_asc), np.min(y_desc)))
+                            + 0.55 * rango_y
+                        )
+                        if previo <= 0.40 and mitad_baja_carga:
+                            vio_nucleo_transferencia = True
+                        if (
+                            vio_nucleo_transferencia
+                            and posterior >= 0.45
+                            and componente_horizontal[k] >= 0.38
+                        ):
+                            indice_azul = inicio_busqueda + max(0, k - 1)
                             break
             return (
                 float(x[indice_azul]), float(y[indice_azul]),
