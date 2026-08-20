@@ -46,7 +46,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-20-v74-fin-rodilla-derecha-gas-4de6"
+    "2026-08-20-v76-rojos-laterales-superiores-arqueados-4de6"
 )
 
 VENTANA_DIAGNOSTICO_ROBUSTO = 6

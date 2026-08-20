@@ -1171,6 +1171,29 @@ def calcular_sam_modificado(
             >= 0.30 * rango_y
         )
 
+        # Carta llena no rectangular con envolvente superior arqueada. Los
+        # máximos interiores no son codos: los rojos deben permanecer en los
+        # corredores laterales, antes/después de las rodillas. Esta ruta no
+        # se mezcla con gas ni con la transferencia oblicua de viajera.
+        nivel_central_superior = (
+            float(np.median(meseta_gas))
+            if len(meseta_gas) >= 5
+            else np.nan
+        )
+        sobrealtura_superior = (
+            (float(np.max(y_asc)) - nivel_central_superior) / rango_y
+            if np.isfinite(nivel_central_superior)
+            else np.nan
+        )
+        morfologia_superior_arqueada = bool(
+            not morfologia_valvula_viajera
+            and not morfologia_compresion_gas
+            and np.isfinite(sobrealtura_superior)
+            and sobrealtura_superior >= 0.10
+            and len(meseta_gas) >= 5
+            and float(np.ptp(meseta_gas)) <= 0.24 * rango_y
+        )
+
         def frontera_recuperacion_inferior(x, y):
             """Cambio de recuperación fuerte a pseudo horizontal inferior."""
             orden = np.argsort(x, kind="stable")
@@ -1214,6 +1237,7 @@ def calcular_sam_modificado(
             indice = mejor[1]
             return float(xx[indice]), float(yy[indice])
 
+        ajuste_superior_arqueado_aplicado = False
         if morfologia_compresion_gas:
             # Cada esquina se corrige de forma independiente. Una esquina
             # que ya coincide con su transición queda intacta.
@@ -1285,9 +1309,51 @@ def calcular_sam_modificado(
             salida["Metodo_SAM_Seleccionado"] = (
                 "SAM_MODIFICADO_MORFOLOGIA_COMPRESION_GAS"
             )
+        elif morfologia_superior_arqueada:
+            objetivo_rojos = y_min_global + 0.66 * rango_y
+            x_laterales = np.concatenate([x_asc, x_desc])
+            y_laterales = np.concatenate([y_asc, y_desc])
+            indices_rojo_izq = np.flatnonzero(
+                x_laterales <= x_min_global + 0.12 * rango_x
+            )
+            indices_rojo_der = np.flatnonzero(
+                x_asc >= x_max_global - 0.25 * rango_x
+            )
+            if len(indices_rojo_izq) and len(indices_rojo_der):
+                indice_rojo_izq = int(indices_rojo_izq[np.argmin(
+                    abs(y_laterales[indices_rojo_izq] - objetivo_rojos)
+                )])
+                indice_rojo_der = int(indices_rojo_der[np.argmin(
+                    abs(y_asc[indices_rojo_der] - objetivo_rojos)
+                )])
+                rojo_arqueado_izq = (
+                    float(x_laterales[indice_rojo_izq]),
+                    float(y_laterales[indice_rojo_izq]),
+                )
+                rojo_arqueado_der = (
+                    float(x_asc[indice_rojo_der]),
+                    float(y_asc[indice_rojo_der]),
+                )
+                media_roja_actual = 0.5 * (
+                    roja_izquierda + roja_derecha
+                )
+                media_roja_arqueada = 0.5 * (
+                    rojo_arqueado_izq[1] + rojo_arqueado_der[1]
+                )
+                if (
+                    media_roja_actual
+                    > media_roja_arqueada + 0.06 * rango_y
+                ):
+                    x_roja_izq, roja_izquierda = rojo_arqueado_izq
+                    x_roja_der, roja_derecha = rojo_arqueado_der
+                    salida["Metodo_SAM_Seleccionado"] = (
+                        "SAM_MODIFICADO_LATERALES_SUPERIORES_ARQUEADOS"
+                    )
+                    ajuste_superior_arqueado_aplicado = True
         if (
             not morfologia_valvula_viajera
             and not morfologia_compresion_gas
+            and not ajuste_superior_arqueado_aplicado
             and all(punto is not None for punto in geometria.values())
         ):
             rojo_geom_izq = geometria["rojo_izq"][:2]
@@ -5379,10 +5445,22 @@ def procesar_json(
 
     base_diagnosticos = resultados_cartas.copy()
 
-    # Nombres inequívocos de los valores que vamos a utilizar.
-    base_diagnosticos["Llenado_Usado_pct"] = base_diagnosticos["Llenado_Calculado_pct"]
-    base_diagnosticos["Peso_Fluido_Usado_lbf"] = base_diagnosticos["Peso_Fluido_API_lbf"]
-    base_diagnosticos["Sumergencia_Usada_m"] = base_diagnosticos["Sumergencia_API_m"]
+    # Fuente canónica para diagnóstico. El llenado es el calculado a partir
+    # de la carta y las variables hidráulicas provienen exclusivamente del
+    # SAM Modificado: peso = horizontal superior nueva - horizontal inferior
+    # nueva, y sumergencia recalculada desde ese peso. Los valores API se
+    # conservan sólo como referencia y comparación.
+    base_diagnosticos["Llenado_Usado_pct"] = (
+        base_diagnosticos["Llenado_Calculado_pct"]
+    )
+    base_diagnosticos["Peso_Fluido_Usado_lbf"] = pd.to_numeric(
+        base_diagnosticos["Peso_Fluido_SAM_Seleccionado_lbf"],
+        errors="coerce",
+    )
+    base_diagnosticos["Sumergencia_Usada_m"] = pd.to_numeric(
+        base_diagnosticos["Sumergencia_SAM_Seleccionada_m"],
+        errors="coerce",
+    )
 
     base_diagnosticos["Carga_Real_vs_Teorica_pct"] = (
         100 * base_diagnosticos["Peso_Fluido_Usado_lbf"]
@@ -5406,11 +5484,11 @@ def procesar_json(
     )
 
     # Controles: no se borran anomalías, solamente se marcan.
-    base_diagnosticos["Peso_API_Valido"] = (
+    base_diagnosticos["Peso_SAM_Valido"] = (
         np.isfinite(base_diagnosticos["Peso_Fluido_Usado_lbf"])
         & (base_diagnosticos["Peso_Fluido_Usado_lbf"] > 0)
     )
-    base_diagnosticos["Sumergencia_API_Valida"] = (
+    base_diagnosticos["Sumergencia_SAM_Valida"] = (
         np.isfinite(base_diagnosticos["Sumergencia_Usada_m"])
         & (base_diagnosticos["Sumergencia_Usada_m"] >= 0)
         & (base_diagnosticos["Sumergencia_Usada_m"] <= base_diagnosticos["Profundidad_Bomba_m"])
@@ -5421,8 +5499,8 @@ def procesar_json(
         & (base_diagnosticos["Llenado_Usado_pct"] <= 140)
     )
     base_diagnosticos["Datos_Operativos_Validos"] = (
-        base_diagnosticos["Peso_API_Valido"]
-        & base_diagnosticos["Sumergencia_API_Valida"]
+        base_diagnosticos["Peso_SAM_Valido"]
+        & base_diagnosticos["Sumergencia_SAM_Valida"]
         & base_diagnosticos["Llenado_Valido"]
     )
 
@@ -8107,6 +8185,15 @@ def procesar_json(
                         base_diagnosticos["CartaId"].astype(int) == carta_id,
                         campo,
                     ] = valor
+                mascara_carta_base = (
+                    base_diagnosticos["CartaId"].astype(int) == carta_id
+                )
+                base_diagnosticos.loc[
+                    mascara_carta_base, "Peso_Fluido_Usado_lbf"
+                ] = peso_sam
+                base_diagnosticos.loc[
+                    mascara_carta_base, "Sumergencia_Usada_m"
+                ] = sumergencia_sam
 
         # Si la transferencia derecha no pudo medirse y la carta conserva
         # un llenado alto, un vacío superior pequeño y solamente un
@@ -8188,21 +8275,46 @@ def procesar_json(
         # 5. POZO SUBEXPLOTADO
         # --------------------------------------------------------
 
-        sumergencia_relativa = metrica[
-            "Sumergencia_Relativa_pct"
-        ]
-
+        # Puede existir una corrección SAM posterior (por ejemplo, golpe de
+        # bomba usando sólo el azul derecho). El diagnóstico consume siempre
+        # el valor SAM final del resultado, no la sumergencia API ni una copia
+        # previa a esa corrección.
+        sumergencia_relativa = pd.to_numeric(
+            resultado.get(
+                "Sumergencia_Relativa_SAM_Seleccionada_pct",
+                metrica["Sumergencia_Relativa_pct"],
+            ),
+            errors="coerce",
+        )
+        peso_fluido_diagnostico = pd.to_numeric(
+            resultado.get("Peso_Fluido_SAM_Seleccionado_lbf", np.nan),
+            errors="coerce",
+        )
+        sumergencia_diagnostico_m = pd.to_numeric(
+            resultado.get("Sumergencia_SAM_Seleccionada_m", np.nan),
+            errors="coerce",
+        )
+        profundidad_diagnostico_m = pd.to_numeric(
+            resultado.get("Profundidad_Bomba_m", np.nan),
+            errors="coerce",
+        )
         datos_operativos_validos = bool(
-            metrica["Datos_Operativos_Validos"]
+            np.isfinite(peso_fluido_diagnostico)
+            and peso_fluido_diagnostico > 0.0
+            and np.isfinite(sumergencia_diagnostico_m)
+            and sumergencia_diagnostico_m >= 0.0
+            and np.isfinite(profundidad_diagnostico_m)
+            and sumergencia_diagnostico_m <= profundidad_diagnostico_m
+            and np.isfinite(llenado_operativo)
+            and 0.0 <= llenado_operativo <= 140.0
         )
 
         # Para evaluar una oportunidad de subexplotación solamente se
-        # necesitan el llenado de la carta y una sumergencia relativa
-        # utilizable. El peso de fluido API puede venir nulo o igual a cero
-        # aunque la sumergencia informada sea válida; ese faltante no debe
-        # bloquear por sí solo este diagnóstico.
+        # necesitan el llenado calculado de la carta y una sumergencia SAM
+        # utilizable, derivada de las horizontales nuevas.
         datos_subexplotacion_validos = bool(
-            np.isfinite(llenado_operativo)
+            datos_operativos_validos
+            and np.isfinite(llenado_operativo)
             and 0.0 <= llenado_operativo <= 140.0
             and np.isfinite(sumergencia_relativa)
             and sumergencia_relativa >= 0.0
@@ -8703,6 +8815,14 @@ def procesar_json(
                 np.nan if sin_trabajo else llenado,
             "Llenado_Operativo_pct":
                 np.nan if sin_trabajo else llenado_operativo,
+            "Fuente_Variables_Diagnostico":
+                "SAM_MODIFICADO_HORIZONTALES_NUEVAS",
+            "Llenado_Diagnostico_pct":
+                np.nan if sin_trabajo else llenado_operativo,
+            "Peso_Fluido_Diagnostico_lbf":
+                peso_fluido_diagnostico,
+            "Sumergencia_Diagnostico_m":
+                sumergencia_diagnostico_m,
             "Sumergencia_Relativa_pct":
                 sumergencia_relativa,
             "Sumergencia_API_m":
