@@ -560,10 +560,19 @@ def calcular_sam_modificado(
                 norma > 1e-9 and dx_normalizado / norma >= 0.20
             )
 
+        candidatos_ascendentes_derecha = [
+            item for item in candidatos_derecha
+            if item[1] == "ascendente"
+        ]
+        candidato_derecho_viajera = (
+            max(candidatos_ascendentes_derecha, key=lambda item: item[0])[2]
+            if candidatos_ascendentes_derecha
+            else None
+        )
         morfologia_valvula_viajera = bool(
-            rama_derecha_elegida == "ascendente"
+            candidato_derecho_viajera is not None
             and transferencia_oblicua(candidato_izquierdo_base)
-            and transferencia_oblicua(candidato_derecho_base)
+            and transferencia_oblicua(candidato_derecho_viajera)
         )
 
         # Reconciliación independiente de las cuatro esquinas. La selección
@@ -1047,7 +1056,7 @@ def calcular_sam_modificado(
             (
                 x_azul_der, azul_derecha,
                 x_roja_der, roja_derecha,
-            ) = candidato_derecho_base
+            ) = candidato_derecho_viajera
             salida["Metodo_SAM_Seleccionado"] = (
                 "SAM_MODIFICADO_MORFOLOGIA_VALVULA_VIAJERA"
             )
