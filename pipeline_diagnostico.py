@@ -1064,44 +1064,51 @@ def calcular_sam_modificado(
             rojo_derecho_oblicua = detectar_recta_superior_derecha(
                 x_asc, y_asc
             )
-            if (
-                rojo_derecho_oblicua is None
-                or rojo_derecho_oblicua[0] <= x_roja_der
-                or rojo_derecho_oblicua[1]
-                >= roja_derecha - 0.01 * rango_y
-            ):
-                # Respaldo sin exigir una meseta perfectamente horizontal:
-                # desde el rojo preliminar busca tres segmentos consecutivos
-                # cuya pendiente ya sea propia de la oblicua descendente.
-                orden_asc = np.argsort(x_asc, kind="stable")
-                x_sup = x_asc[orden_asc]
-                y_sup = y_asc[orden_asc]
-                dx_sup = np.diff(x_sup / rango_x)
-                dy_sup = np.diff(y_sup / rango_y)
-                pendientes_sup = np.full(len(dx_sup), np.nan)
-                validas_sup = dx_sup > 1e-4
-                pendientes_sup[validas_sup] = (
-                    dy_sup[validas_sup] / dx_sup[validas_sup]
+            # Se calcula siempre un segundo candidato sin exigir una meseta
+            # perfectamente horizontal. Así una detección temprana dentro
+            # del codo no impide encontrar la oblicua ya consolidada.
+            rojo_derecho_caida = None
+            orden_asc = np.argsort(x_asc, kind="stable")
+            x_sup = x_asc[orden_asc]
+            y_sup = y_asc[orden_asc]
+            dx_sup = np.diff(x_sup / rango_x)
+            dy_sup = np.diff(y_sup / rango_y)
+            pendientes_sup = np.full(len(dx_sup), np.nan)
+            validas_sup = dx_sup > 1e-4
+            pendientes_sup[validas_sup] = (
+                dy_sup[validas_sup] / dx_sup[validas_sup]
+            )
+            inicio_sup = int(np.searchsorted(x_sup, x_roja_der))
+            for k in range(inicio_sup, len(pendientes_sup) - 2):
+                futuras = pendientes_sup[k:k + 3]
+                futuras = futuras[np.isfinite(futuras)]
+                if len(futuras) < 2:
+                    continue
+                if (
+                    float(np.median(futuras)) <= -0.38
+                    and np.count_nonzero(futuras <= -0.22) >= 2
+                ):
+                    # Una muestra adicional deja atrás el redondeo del codo
+                    # y ubica el punto inequívocamente sobre la oblicua.
+                    indice_caida = min(k + 4, len(x_sup) - 1)
+                    rojo_derecho_caida = (
+                        float(x_sup[indice_caida]),
+                        float(y_sup[indice_caida]),
+                    )
+                    break
+            candidatos_rojo_oblicua = [
+                punto
+                for punto in (
+                    rojo_derecho_oblicua,
+                    rojo_derecho_caida,
                 )
-                inicio_sup = int(np.searchsorted(x_sup, x_roja_der))
-                for k in range(inicio_sup, len(pendientes_sup) - 2):
-                    futuras = pendientes_sup[k:k + 3]
-                    futuras = futuras[np.isfinite(futuras)]
-                    if len(futuras) < 2:
-                        continue
-                    if (
-                        float(np.median(futuras)) <= -0.38
-                        and np.count_nonzero(futuras <= -0.22) >= 2
-                    ):
-                        # Se confirma el final del codo con la corrida
-                        # completa y se coloca el marcador en su última
-                        # muestra, ya establemente dentro de la oblicua.
-                        indice_caida = min(k + 3, len(x_sup) - 1)
-                        rojo_derecho_oblicua = (
-                            float(x_sup[indice_caida]),
-                            float(y_sup[indice_caida]),
-                        )
-                        break
+                if punto is not None
+            ]
+            rojo_derecho_oblicua = (
+                max(candidatos_rojo_oblicua, key=lambda punto: punto[0])
+                if candidatos_rojo_oblicua
+                else None
+            )
             if (
                 rojo_derecho_oblicua is not None
                 and rojo_derecho_oblicua[0] >= x_roja_der
@@ -1143,8 +1150,138 @@ def calcular_sam_modificado(
                 x_desc, y_desc, "derecha"
             ),
         }
+
+        # Morfología de compresión/interferencia de gas: envolvente superior
+        # extensa y casi plana, valle inferior profundo y recuperación fuerte
+        # hacia la derecha. Se reconoce sólo por geometría porque el SAM se
+        # calcula antes que las etiquetas diagnósticas.
+        mascara_meseta_gas = (
+            (x_asc >= x_min_global + 0.22 * rango_x)
+            & (x_asc <= x_min_global + 0.72 * rango_x)
+        )
+        mascara_derecha_gas = x_desc >= x_min_global + 0.72 * rango_x
+        meseta_gas = y_asc[mascara_meseta_gas]
+        derecha_gas = y_desc[mascara_derecha_gas]
+        morfologia_compresion_gas = bool(
+            not morfologia_valvula_viajera
+            and len(meseta_gas) >= 5
+            and len(derecha_gas) >= 3
+            and float(np.ptp(meseta_gas)) <= 0.22 * rango_y
+            and float(np.max(derecha_gas) - np.min(y_desc))
+            >= 0.30 * rango_y
+        )
+
+        def frontera_recuperacion_inferior(x, y):
+            """Cambio de recuperación fuerte a pseudo horizontal inferior."""
+            orden = np.argsort(x, kind="stable")
+            xx = np.asarray(x, dtype=float)[orden]
+            yy = np.asarray(y, dtype=float)[orden]
+            indice_minimo = int(np.argmin(yy))
+            xx = xx[indice_minimo:]
+            yy = yy[indice_minimo:]
+            if len(xx) < 8:
+                return None
+            xn = (xx - x_min_global) / rango_x
+            yn = (yy - y_min_global) / rango_y
+            mejor = None
+            for corte in range(3, len(xx) - 3):
+                if (
+                    np.ptp(xn[:corte + 1]) < 0.10
+                    or np.ptp(xn[corte:]) < 0.16
+                ):
+                    continue
+                coef_antes = np.polyfit(xn[:corte + 1], yn[:corte + 1], 1)
+                coef_despues = np.polyfit(xn[corte:], yn[corte:], 1)
+                pendiente_antes = float(coef_antes[0])
+                pendiente_despues = float(coef_despues[0])
+                if (
+                    pendiente_antes < 0.45
+                    or pendiente_antes - pendiente_despues < 0.22
+                ):
+                    continue
+                residuo = float(
+                    np.mean((yn[:corte + 1] - np.polyval(
+                        coef_antes, xn[:corte + 1]
+                    )) ** 2)
+                    + np.mean((yn[corte:] - np.polyval(
+                        coef_despues, xn[corte:]
+                    )) ** 2)
+                )
+                if mejor is None or residuo < mejor[0]:
+                    mejor = (residuo, corte)
+            if mejor is None:
+                return None
+            indice = mejor[1]
+            return float(xx[indice]), float(yy[indice])
+
+        if morfologia_compresion_gas:
+            # Cada esquina se corrige de forma independiente. Una esquina
+            # que ya coincide con su transición queda intacta.
+            rojo_gas_izq = geometria["rojo_izq"]
+            azul_gas_izq = geometria["azul_izq"]
+            if (
+                rojo_gas_izq is not None
+                and x_roja_izq > rojo_gas_izq[0] + 0.025 * rango_x
+            ):
+                x_roja_izq, roja_izquierda = rojo_gas_izq[:2]
+            if (
+                azul_gas_izq is not None
+                and azul_izquierda > azul_gas_izq[1] + 0.06 * rango_y
+            ):
+                x_azul_izq, azul_izquierda = azul_gas_izq[:2]
+
+            # Rodilla superior derecha: se exige caída sostenida y se toma
+            # la muestra posterior a la confirmación, ya fuera de la meseta.
+            orden_sup_gas = np.argsort(x_asc, kind="stable")
+            x_sup_gas = x_asc[orden_sup_gas]
+            y_sup_gas = y_asc[orden_sup_gas]
+            dx_gas = np.diff(x_sup_gas / rango_x)
+            dy_gas = np.diff(y_sup_gas / rango_y)
+            pendientes_gas = np.full(len(dx_gas), np.nan)
+            validas_gas = dx_gas > 1e-4
+            pendientes_gas[validas_gas] = (
+                dy_gas[validas_gas] / dx_gas[validas_gas]
+            )
+            inicio_gas = int(np.searchsorted(
+                x_sup_gas, x_min_global + 0.60 * rango_x
+            ))
+            rojo_gas_der = None
+            for k in range(inicio_gas, len(pendientes_gas) - 1):
+                futuras = pendientes_gas[k:k + 2]
+                futuras = futuras[np.isfinite(futuras)]
+                if (
+                    len(futuras) == 2
+                    and float(np.median(futuras)) <= -0.30
+                    and np.all(futuras <= -0.16)
+                ):
+                    indice = min(k + 2, len(x_sup_gas) - 1)
+                    rojo_gas_der = (
+                        float(x_sup_gas[indice]),
+                        float(y_sup_gas[indice]),
+                    )
+                    break
+            if (
+                rojo_gas_der is not None
+                and rojo_gas_der[0] > x_roja_der + 0.025 * rango_x
+                and rojo_gas_der[1] > azul_derecha + 0.12 * rango_y
+            ):
+                x_roja_der, roja_derecha = rojo_gas_der
+
+            azul_gas_der = frontera_recuperacion_inferior(x_desc, y_desc)
+            if (
+                azul_gas_der is not None
+                and (
+                    x_azul_der > azul_gas_der[0] + 0.12 * rango_x
+                    or azul_derecha > azul_gas_der[1] + 0.10 * rango_y
+                )
+            ):
+                x_azul_der, azul_derecha = azul_gas_der
+            salida["Metodo_SAM_Seleccionado"] = (
+                "SAM_MODIFICADO_MORFOLOGIA_COMPRESION_GAS"
+            )
         if (
             not morfologia_valvula_viajera
+            and not morfologia_compresion_gas
             and all(punto is not None for punto in geometria.values())
         ):
             rojo_geom_izq = geometria["rojo_izq"][:2]
