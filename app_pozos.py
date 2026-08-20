@@ -46,8 +46,11 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-14-v64-restaurado-sin-v2-v68"
+    "2026-08-20-v69-codos-morfologia-robustez-4de6"
 )
+
+VENTANA_DIAGNOSTICO_ROBUSTO = 6
+MIN_REPETICIONES_DIAGNOSTICO_ROBUSTO = 4
 
 COLORES = {
     "Posible pozo subexplotado": "#16833b",
@@ -714,8 +717,8 @@ def valor_texto(valor, formato=".1f", sufijo=""):
 
 def diagnostico_consolidado(cartas_ultimas):
     """
-    Regla preliminar:
-    - robusto: aparece en al menos 3 de las últimas 5 cartas;
+    Regla de consolidación:
+    - robusto: aparece en al menos 4 de las últimas 6 cartas;
     - variabilidad: tres o más diagnósticos principales distintos,
       o CV del VFM bruto superior al 25 %.
     """
@@ -728,7 +731,11 @@ def diagnostico_consolidado(cartas_ultimas):
             conteos[diagnostico] = conteos.get(diagnostico, 0) + 1
 
     robustos = sorted(
-        [(d, n) for d, n in conteos.items() if n >= 3],
+        [
+            (d, n)
+            for d, n in conteos.items()
+            if n >= MIN_REPETICIONES_DIAGNOSTICO_ROBUSTO
+        ],
         key=lambda x: (-x[1], x[0]),
     )
     principales_distintos = cartas_ultimas["Diagnostico_Principal"].nunique()
@@ -751,24 +758,24 @@ def diagnostico_consolidado(cartas_ultimas):
     if variable:
         return (
             "Comportamiento variable",
-            "No hay un diagnóstico repetido en 3 cartas y existe variación entre mediciones.",
+            "No hay un diagnóstico repetido en 4 cartas y existe variación entre mediciones.",
             True,
         )
     return (
         "Sin diagnóstico robusto",
-        "Ningún diagnóstico aparece en al menos 3 de las cartas analizadas.",
+        "Ningún diagnóstico aparece en al menos 4 de las cartas analizadas.",
         False,
     )
 
 
 def tabla_diagnosticos_robustos(historico):
     """
-    Una fila por pozo. Se consideran las últimas cinco cartas y un
-    diagnóstico es robusto cuando aparece al menos tres veces.
+    Una fila por pozo. Se consideran las últimas seis cartas y un
+    diagnóstico es robusto cuando aparece al menos cuatro veces.
     """
     filas = []
     for pozo, grupo in historico.groupby("Pozo", sort=True):
-        ultimas = grupo.nlargest(5, "Fecha")
+        ultimas = grupo.nlargest(VENTANA_DIAGNOSTICO_ROBUSTO, "Fecha")
         conteos = {}
         for lista in ultimas["Diagnosticos_Todos"]:
             for diagnostico in set(lista_alertas(lista)):
@@ -776,7 +783,7 @@ def tabla_diagnosticos_robustos(historico):
         robustos = sorted(
             diagnostico
             for diagnostico, cantidad in conteos.items()
-            if cantidad >= 3
+            if cantidad >= MIN_REPETICIONES_DIAGNOSTICO_ROBUSTO
         )
         filas.append({
             "Pozo": pozo,
@@ -974,11 +981,11 @@ def construir_exportacion_pozos(cartas):
     filas = []
     for pozo, grupo in cartas.groupby("Pozo", sort=True):
         grupo = grupo.sort_values("Fecha", ascending=False)
-        ultimas_cinco = grupo.head(5)
+        ultimas_seis = grupo.head(VENTANA_DIAGNOSTICO_ROBUSTO)
         ultima = grupo.iloc[0]
 
         conteos = {}
-        for diagnosticos in ultimas_cinco["Diagnosticos_Todos"]:
+        for diagnosticos in ultimas_seis["Diagnosticos_Todos"]:
             for diagnostico in set(lista_alertas(diagnosticos)):
                 conteos[diagnostico] = conteos.get(diagnostico, 0) + 1
 
@@ -986,12 +993,12 @@ def construir_exportacion_pozos(cartas):
             (
                 (diagnostico, cantidad)
                 for diagnostico, cantidad in conteos.items()
-                if cantidad >= 3
+                if cantidad >= MIN_REPETICIONES_DIAGNOSTICO_ROBUSTO
             ),
             key=lambda item: (-item[1], item[0]),
         )
         diagnosticos_robustos = " | ".join(
-            f"{diagnostico} ({cantidad}/{len(ultimas_cinco)})"
+            f"{diagnostico} ({cantidad}/{len(ultimas_seis)})"
             for diagnostico, cantidad in robustos
         )
         acciones_robustas = " | ".join(dict.fromkeys(
@@ -1005,7 +1012,7 @@ def construir_exportacion_pozos(cartas):
         fila = {
             "Pozo": pozo,
             "Cantidad_Cartas": int(len(grupo)),
-            "Cartas_Analizadas_Robustez": int(len(ultimas_cinco)),
+            "Cartas_Analizadas_Robustez": int(len(ultimas_seis)),
             "Fecha_Ultima_Carta": ultima.get("Fecha"),
             "Tiene_Diagnostico_Robusto": bool(robustos),
             "Diagnosticos_Robustos": (
@@ -1259,7 +1266,7 @@ filtro_robusto = st.sidebar.multiselect(
     diagnosticos_robustos_disponibles,
     help=(
         "Sólo considera diagnósticos presentes en al menos tres "
-        "de las últimas cinco cartas."
+        "de las últimas seis cartas."
     ),
 )
 filtro_pozo = st.sidebar.multiselect("Pozo", pozos_disponibles)
@@ -1379,8 +1386,8 @@ with tab_resumen:
     robustos_por_pozo = []
     variables = 0
     for pozo, grupo in cartas_contexto.groupby("Pozo"):
-        cinco = grupo.nlargest(5, "Fecha")
-        estado, texto, variable = diagnostico_consolidado(cinco)
+        seis = grupo.nlargest(VENTANA_DIAGNOSTICO_ROBUSTO, "Fecha")
+        estado, texto, variable = diagnostico_consolidado(seis)
         robustos_por_pozo.append({
             "Pozo": pozo,
             "Estado": estado,
@@ -1817,20 +1824,26 @@ with tab_detalle:
         indicadores_15d = calcular_indicadores_moviles_15d(
             tendencias_pozo
         )
-        paginas_pozo = max(1, ceil(len(cartas_pozo) / 5))
+        paginas_pozo = max(
+            1,
+            ceil(len(cartas_pozo) / VENTANA_DIAGNOSTICO_ROBUSTO),
+        )
         pagina_pozo = st.number_input(
-            "Grupo de cinco cartas (1 = más recientes)",
+            "Grupo de seis cartas (1 = más recientes)",
             min_value=1,
             max_value=paginas_pozo,
             value=1,
             step=1,
             key=f"detalle_pagina_{pozo}",
         )
-        cinco = cartas_pozo.iloc[
-            (pagina_pozo - 1) * 5: pagina_pozo * 5
+        seis = cartas_pozo.iloc[
+            (pagina_pozo - 1) * VENTANA_DIAGNOSTICO_ROBUSTO:
+            pagina_pozo * VENTANA_DIAGNOSTICO_ROBUSTO
         ].copy()
 
-        estado, texto_estado, variable = diagnostico_consolidado(cinco)
+        estado, texto_estado, variable = diagnostico_consolidado(
+            cartas_pozo.head(VENTANA_DIAGNOSTICO_ROBUSTO)
+        )
         color_estado = "#16833b" if estado == "Diagnóstico robusto" else "#e87918"
         st.markdown(
             f"""
@@ -2193,12 +2206,13 @@ no tenga más peso que otro. Todavía no se aplican umbrales diagnósticos.
                 )
 
         st.subheader(
-            f"Cartas {1 + (pagina_pozo - 1) * 5}–"
-            f"{min(pagina_pozo * 5, len(cartas_pozo))} de {len(cartas_pozo)}"
+            f"Cartas {1 + (pagina_pozo - 1) * VENTANA_DIAGNOSTICO_ROBUSTO}–"
+            f"{min(pagina_pozo * VENTANA_DIAGNOSTICO_ROBUSTO, len(cartas_pozo))} "
+            f"de {len(cartas_pozo)}"
         )
-        for i in range(0, len(cinco), 2):
+        for i in range(0, len(seis), 2):
             columnas = st.columns(2)
-            for columna, (_, diag) in zip(columnas, cinco.iloc[i:i + 2].iterrows()):
+            for columna, (_, diag) in zip(columnas, seis.iloc[i:i + 2].iterrows()):
                 carta_id = int(diag["CartaId"])
                 with columna:
                     st.plotly_chart(
@@ -2222,32 +2236,21 @@ no tenga más peso que otro. Todavía no se aplican umbrales diagnósticos.
                     )
                     st.caption(
                         f"Fecha: {pd.to_datetime(diag['Fecha']).strftime('%d/%m/%Y %H:%M')}  \n"
-                        f"Carrera de fondo: "
-                        f"{valor_texto(carrera_fondo_carta(cartas_por_id[carta_id]), '.1f', ' pulg')}  \n"
-                        f"Llenado operativo: {valor_texto(diag.get('Llenado_Operativo_pct'), '.1f', '%')} · "
-                        f"Sumergencia API: {valor_texto(diag.get('Sumergencia_API_m'), '.1f', ' m')} "
-                        f"({valor_texto(diag.get('Sumergencia_Relativa_pct'), '.1f', '%')}) · "
-                        f"calculada: "
+                        f"Carrera de fondo efectiva: "
+                        f"{valor_texto(diag.get('Carrera_Efectiva_Fondo_Calculada_pulg'), '.1f', ' pulg')}  \n"
+                        f"Peso de fluido: "
+                        f"{valor_texto(diag.get('Peso_Fluido_SAM_Seleccionado_lbf'), '.0f', ' lbf')}  \n"
+                        f"Sumergencia: "
                         f"{valor_texto(diag.get('Sumergencia_SAM_Seleccionada_m'), '.1f', ' m')} "
                         f"({valor_texto(diag.get('Sumergencia_Relativa_SAM_Seleccionada_pct'), '.1f', '%')})  \n"
-                        f"Peso fluido API: "
-                        f"{valor_texto(diag.get('Peso_Fluido_API_lbf'), '.0f', ' lbf')} · "
-                        f"SAM ({diag.get('Metodo_SAM_Seleccionado', '—')}): "
-                        f"{valor_texto(diag.get('Peso_Fluido_SAM_Seleccionado_lbf'), '.0f', ' lbf')}  \n"
-                        f"PIP SAM: {valor_texto(diag.get('PIP_SAM_Seleccionado_psi'), '.1f', ' psi')} · "
-                        f"gradiente: {valor_texto(diag.get('Gradiente_SAM_psi_m'), '.3f', ' psi/m')}  \n"
-                        f"Carrera geométrica propia: "
-                        f"{valor_texto(diag.get('Carrera_Geometrica_Fondo_Calculada_pulg'), '.1f', ' pulg')}  \n"
-                        f"Carrera efectiva propia/API: "
-                        f"{valor_texto(diag.get('Carrera_Efectiva_Fondo_Calculada_pulg'), '.1f', ' pulg')} / "
-                        f"{valor_texto(diag.get('Carrera_Efectiva_Fondo_API_pulg'), '.1f', ' pulg')}  \n"
-                        f"Desplazamiento efectivo propio/API: "
-                        f"{valor_texto(diag.get('Desplazamiento_Bruto_Efectivo_Calculado_m3_d'), '.2f', ' m³/d')} / "
-                        f"{valor_texto(diag.get('Desplazamiento_Bruto_Efectivo_API_m3_d'), '.2f', ' m³/d')}  \n"
+                        f"Desplazamiento efectivo: "
+                        f"{valor_texto(diag.get('Desplazamiento_Bruto_Efectivo_Calculado_m3_d'), '.2f', ' m³/d')}  \n"
                         f"Torque: {valor_texto(diag.get('Torque_Reductor_pct'), '.1f', '%')} · "
                         f"Carga estructural: {valor_texto(diag.get('Carga_Estructural_pct'), '.1f', '%')}  \n"
-                        f"Acción: {diag.get('Accion_Sugerida', '—')}  \n"
-                        f"VFM/control: {diag.get('Comentario_VFM_Control', 'Sin comparación disponible')}"
+                        f"VFM: bruto {valor_texto(diag.get('VFM_Bruta_m3_d'), '.2f', ' m³/d')} · "
+                        f"petróleo {valor_texto(diag.get('VFM_Petroleo_m3_d'), '.2f', ' m³/d')}  \n"
+                        f"Comentario VFM: {diag.get('Comentario_VFM_Control', 'Sin comparación disponible')}  \n"
+                        f"Acción recomendada: {diag.get('Accion_Sugerida', '—')}"
                     )
 
 with tab_descargas:

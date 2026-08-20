@@ -525,12 +525,13 @@ def calcular_sam_modificado(
             reverse=True,
         )
         (
-            _, _,
+            _, rama_derecha_elegida,
             (
                 x_azul_der, azul_derecha,
                 x_roja_der, roja_derecha,
             ),
         ) = candidatos_derecha[0]
+        candidato_derecho_base = candidatos_derecha[0][2]
 
         # Si ambas ramas describen transferencias de amplitud similar, se
         # conserva la exterior: evita que ondulaciones de la meseta compitan
@@ -546,8 +547,24 @@ def calcular_sam_modificado(
                     x_azul_der, azul_derecha,
                     x_roja_der, roja_derecha,
                 ) = exterior[2]
+                rama_derecha_elegida = exterior[1]
+                candidato_derecho_base = exterior[2]
         except (ValueError, IndexError):
             pass
+
+        def transferencia_oblicua(candidato):
+            dx_normalizado = abs(candidato[2] - candidato[0]) / rango_x
+            dy_normalizado = abs(candidato[3] - candidato[1]) / rango_y
+            norma = float(np.hypot(dx_normalizado, dy_normalizado))
+            return bool(
+                norma > 1e-9 and dx_normalizado / norma >= 0.20
+            )
+
+        morfologia_valvula_viajera = bool(
+            rama_derecha_elegida == "ascendente"
+            and transferencia_oblicua(candidato_izquierdo_base)
+            and transferencia_oblicua(candidato_derecho_base)
+        )
 
         # Reconciliación independiente de las cuatro esquinas. La selección
         # base v59 se conserva salvo que otra pareja de extremos mejore de
@@ -934,6 +951,168 @@ def calcular_sam_modificado(
             (x_roja_izq, roja_izquierda), (
                 x_roja_der, roja_derecha
             ) = propuesta_rojo
+
+        def frontera_geometrica_rama(x, y, lado):
+            """Frontera robusta entre una lateral y una pseudo horizontal.
+
+            Ajusta dos rectas contiguas en coordenadas normalizadas y sólo
+            acepta el quiebre cuando una es claramente más horizontal que la
+            otra. Esto admite transferencias verticales u oblicuas y evita
+            usar una carga SAM como nivel de corte.
+            """
+            x = np.asarray(x, dtype=float)
+            y = np.asarray(y, dtype=float)
+            orden = np.argsort(x, kind="stable")
+            x, y = x[orden], y[orden]
+            limite = (
+                x <= x_min_global + 0.42 * rango_x
+                if lado == "izquierda"
+                else x >= x_max_global - 0.42 * rango_x
+            )
+            indices = np.flatnonzero(limite)
+            if len(indices) < 6:
+                return None
+            xx = (x[indices] - x_min_global) / rango_x
+            yy = (y[indices] - y_min_global) / rango_y
+
+            def ajuste_tls(a, b):
+                puntos = np.column_stack([a, b])
+                centro = np.mean(puntos, axis=0)
+                centrados = puntos - centro
+                _, singulares, vh = np.linalg.svd(
+                    centrados, full_matrices=False
+                )
+                if not len(singulares) or singulares[0] <= 1e-9:
+                    return None
+                eje = vh[0]
+                horizontalidad = abs(float(eje[0]))
+                residuo = float(np.mean(
+                    (centrados @ np.array([-eje[1], eje[0]])) ** 2
+                ))
+                return horizontalidad, residuo
+
+            mejor = None
+            for corte in range(2, len(indices) - 2):
+                primero = ajuste_tls(xx[:corte + 1], yy[:corte + 1])
+                segundo = ajuste_tls(xx[corte:], yy[corte:])
+                if primero is None or segundo is None:
+                    continue
+                if lado == "izquierda":
+                    lateral, horizontal = primero, segundo
+                    amplitud_lateral = float(np.ptp(yy[:corte + 1]))
+                    amplitud_horizontal = float(np.ptp(xx[corte:]))
+                else:
+                    horizontal, lateral = primero, segundo
+                    amplitud_horizontal = float(np.ptp(xx[:corte + 1]))
+                    amplitud_lateral = float(np.ptp(yy[corte:]))
+                diferencia = horizontal[0] - lateral[0]
+                if (
+                    horizontal[0] < 0.72
+                    or lateral[0] > 0.82
+                    or diferencia < 0.16
+                    or amplitud_lateral < 0.12
+                    or amplitud_horizontal < 0.12
+                ):
+                    continue
+                score = (
+                    primero[1] + segundo[1]
+                    + 0.012 / max(diferencia, 1e-6)
+                )
+                if mejor is None or score < mejor[0]:
+                    mejor = (score, corte, diferencia)
+            if mejor is None:
+                return None
+
+            corte = mejor[1]
+            # En ambos lados se devuelve la muestra perteneciente a la
+            # transferencia: fin de la lateral izquierda o comienzo de la
+            # lateral derecha. Así el punto no invade la pseudo horizontal.
+            indice_local = max(0, corte - 1) if lado == "izquierda" else corte
+            indice_ordenado = int(indices[indice_local])
+            return (
+                float(x[indice_ordenado]),
+                float(y[indice_ordenado]),
+                float(mejor[2]),
+            )
+
+        # En la morfología de pérdida en válvula viajera, la transferencia
+        # completa está en la ascendente y es oblicua. Se restauran sus
+        # extremos geométricos antes de cualquier reconciliación por nivel:
+        # los rojos quedan arriba y los azules en el pie de las oblicuas.
+        if morfologia_valvula_viajera:
+            (
+                x_azul_izq, azul_izquierda,
+                x_roja_izq, roja_izquierda,
+            ) = candidato_izquierdo_base
+            (
+                x_azul_der, azul_derecha,
+                x_roja_der, roja_derecha,
+            ) = candidato_derecho_base
+            salida["Metodo_SAM_Seleccionado"] = (
+                "SAM_MODIFICADO_MORFOLOGIA_VALVULA_VIAJERA"
+            )
+        else:
+            # Salvaguarda local para el error observado en cartas llenas: una
+            # reconciliación de niveles no puede alejar un azul hacia arriba
+            # del pie de la transferencia recta que ya detectó el método
+            # base. Se corrige cada lado de manera independiente.
+            azul_base_izq = candidato_izquierdo_base[:2]
+            azul_base_der = candidato_derecho_base[:2]
+            if azul_izquierda > azul_base_izq[1] + 0.12 * rango_y:
+                x_azul_izq, azul_izquierda = azul_base_izq
+            if azul_derecha > azul_base_der[1] + 0.12 * rango_y:
+                x_azul_der, azul_derecha = azul_base_der
+
+        # Fine tuning morfológico: sólo reemplaza el resultado conservador
+        # cuando las cuatro esquinas presentan transiciones claras. Las
+        # cartas irregulares conservan íntegramente los criterios anteriores.
+        geometria = {
+            "rojo_izq": frontera_geometrica_rama(
+                x_asc, y_asc, "izquierda"
+            ),
+            "rojo_der": frontera_geometrica_rama(
+                x_asc, y_asc, "derecha"
+            ),
+            "azul_izq": frontera_geometrica_rama(
+                x_desc, y_desc, "izquierda"
+            ),
+            "azul_der": frontera_geometrica_rama(
+                x_desc, y_desc, "derecha"
+            ),
+        }
+        if (
+            not morfologia_valvula_viajera
+            and all(punto is not None for punto in geometria.values())
+        ):
+            rojo_geom_izq = geometria["rojo_izq"][:2]
+            rojo_geom_der = geometria["rojo_der"][:2]
+            azul_geom_izq = geometria["azul_izq"][:2]
+            azul_geom_der = geometria["azul_der"][:2]
+            superior_geom = 0.5 * (
+                rojo_geom_izq[1] + rojo_geom_der[1]
+            )
+            inferior_geom = 0.5 * (
+                azul_geom_izq[1] + azul_geom_der[1]
+            )
+            peso_geom = superior_geom - inferior_geom
+            coherencia_superior = (
+                abs(rojo_geom_izq[1] - rojo_geom_der[1]) <= 0.22 * rango_y
+            )
+            coherencia_inferior = (
+                abs(azul_geom_izq[1] - azul_geom_der[1]) <= 0.22 * rango_y
+            )
+            if (
+                0.18 * rango_y <= peso_geom <= 0.92 * rango_y
+                and coherencia_superior
+                and coherencia_inferior
+            ):
+                x_roja_izq, roja_izquierda = rojo_geom_izq
+                x_roja_der, roja_derecha = rojo_geom_der
+                x_azul_izq, azul_izquierda = azul_geom_izq
+                x_azul_der, azul_derecha = azul_geom_der
+                salida["Metodo_SAM_Seleccionado"] = (
+                    "SAM_MODIFICADO_TRANSICIONES_MORFOLOGICAS"
+                )
         carga_superior = float(np.mean([roja_izquierda, roja_derecha]))
         carga_inferior = float(np.mean([azul_izquierda, azul_derecha]))
         peso = carga_superior - carga_inferior
