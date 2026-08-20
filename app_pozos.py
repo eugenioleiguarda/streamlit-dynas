@@ -46,7 +46,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-20-v70-prioridad-oblicuas-robustez-4de6"
+    "2026-08-20-v71-rojo-derecho-oblicua-robustez-4de6"
 )
 
 VENTANA_DIAGNOSTICO_ROBUSTO = 6

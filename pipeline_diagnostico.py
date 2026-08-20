@@ -1057,6 +1057,60 @@ def calcular_sam_modificado(
                 x_azul_der, azul_derecha,
                 x_roja_der, roja_derecha,
             ) = candidato_derecho_viajera
+            # El ajuste de la recta completa puede dejar el rojo derecho en
+            # la última muestra alta de la meseta. Para esta morfología se
+            # prefiere el primer punto ya contenido en la caída oblicua
+            # sostenida, es decir, inmediatamente después del codo superior.
+            rojo_derecho_oblicua = detectar_recta_superior_derecha(
+                x_asc, y_asc
+            )
+            if (
+                rojo_derecho_oblicua is None
+                or rojo_derecho_oblicua[0] <= x_roja_der
+                or rojo_derecho_oblicua[1]
+                >= roja_derecha - 0.01 * rango_y
+            ):
+                # Respaldo sin exigir una meseta perfectamente horizontal:
+                # desde el rojo preliminar busca tres segmentos consecutivos
+                # cuya pendiente ya sea propia de la oblicua descendente.
+                orden_asc = np.argsort(x_asc, kind="stable")
+                x_sup = x_asc[orden_asc]
+                y_sup = y_asc[orden_asc]
+                dx_sup = np.diff(x_sup / rango_x)
+                dy_sup = np.diff(y_sup / rango_y)
+                pendientes_sup = np.full(len(dx_sup), np.nan)
+                validas_sup = dx_sup > 1e-4
+                pendientes_sup[validas_sup] = (
+                    dy_sup[validas_sup] / dx_sup[validas_sup]
+                )
+                inicio_sup = int(np.searchsorted(x_sup, x_roja_der))
+                for k in range(inicio_sup, len(pendientes_sup) - 2):
+                    futuras = pendientes_sup[k:k + 3]
+                    futuras = futuras[np.isfinite(futuras)]
+                    if len(futuras) < 2:
+                        continue
+                    if (
+                        float(np.median(futuras)) <= -0.38
+                        and np.count_nonzero(futuras <= -0.22) >= 2
+                    ):
+                        # Se confirma el final del codo con la corrida
+                        # completa y se coloca el marcador en su última
+                        # muestra, ya establemente dentro de la oblicua.
+                        indice_caida = min(k + 3, len(x_sup) - 1)
+                        rojo_derecho_oblicua = (
+                            float(x_sup[indice_caida]),
+                            float(y_sup[indice_caida]),
+                        )
+                        break
+            if (
+                rojo_derecho_oblicua is not None
+                and rojo_derecho_oblicua[0] >= x_roja_der
+                and rojo_derecho_oblicua[1]
+                < roja_derecha - 0.01 * rango_y
+                and rojo_derecho_oblicua[1]
+                > azul_derecha + 0.35 * rango_y
+            ):
+                x_roja_der, roja_derecha = rojo_derecho_oblicua
             salida["Metodo_SAM_Seleccionado"] = (
                 "SAM_MODIFICADO_MORFOLOGIA_VALVULA_VIAJERA"
             )
