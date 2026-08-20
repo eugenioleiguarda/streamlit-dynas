@@ -1230,11 +1230,12 @@ def calcular_sam_modificado(
             ):
                 x_azul_izq, azul_izquierda = azul_gas_izq[:2]
 
-            # Rodilla superior derecha: se exige caída sostenida y se toma
-            # la muestra posterior a la confirmación, ya fuera de la meseta.
-            orden_sup_gas = np.argsort(x_asc, kind="stable")
-            x_sup_gas = x_asc[orden_sup_gas]
-            y_sup_gas = y_asc[orden_sup_gas]
+            # Cierre derecho no rectangular: el rojo pertenece a la rama
+            # descendente. Marca el final de la recuperación fuerte de carga,
+            # cuando termina la rodilla y comienza el tramo alto casi plano.
+            orden_sup_gas = np.argsort(x_desc, kind="stable")
+            x_sup_gas = x_desc[orden_sup_gas]
+            y_sup_gas = y_desc[orden_sup_gas]
             dx_gas = np.diff(x_sup_gas / rango_x)
             dy_gas = np.diff(y_sup_gas / rango_y)
             pendientes_gas = np.full(len(dx_gas), np.nan)
@@ -1243,18 +1244,24 @@ def calcular_sam_modificado(
                 dy_gas[validas_gas] / dx_gas[validas_gas]
             )
             inicio_gas = int(np.searchsorted(
-                x_sup_gas, x_min_global + 0.60 * rango_x
+                x_sup_gas, max(
+                    x_azul_der,
+                    x_min_global + 0.45 * rango_x,
+                )
             ))
             rojo_gas_der = None
+            vio_recuperacion_fuerte = False
             for k in range(inicio_gas, len(pendientes_gas) - 1):
-                futuras = pendientes_gas[k:k + 2]
-                futuras = futuras[np.isfinite(futuras)]
-                if (
-                    len(futuras) == 2
-                    and float(np.median(futuras)) <= -0.30
-                    and np.all(futuras <= -0.16)
-                ):
-                    indice = min(k + 2, len(x_sup_gas) - 1)
+                entorno = pendientes_gas[max(inicio_gas, k - 1):k + 2]
+                entorno = entorno[np.isfinite(entorno)]
+                if len(entorno) < 2:
+                    continue
+                pendiente_local = float(np.median(entorno))
+                if pendiente_local >= 0.45:
+                    vio_recuperacion_fuerte = True
+                    continue
+                if vio_recuperacion_fuerte and pendiente_local <= 0.22:
+                    indice = min(k + 1, len(x_sup_gas) - 1)
                     rojo_gas_der = (
                         float(x_sup_gas[indice]),
                         float(y_sup_gas[indice]),
@@ -1262,7 +1269,6 @@ def calcular_sam_modificado(
                     break
             if (
                 rojo_gas_der is not None
-                and rojo_gas_der[0] > x_roja_der + 0.025 * rango_x
                 and rojo_gas_der[1] > azul_derecha + 0.12 * rango_y
             ):
                 x_roja_der, roja_derecha = rojo_gas_der
