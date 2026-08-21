@@ -232,13 +232,16 @@ def calcular_sam_modificado(
                     )
 
             indices = np.arange(inicio_elegido, fin_elegido + 1)
-            # En el extremo superior izquierdo, los ejemplos ubican el codo
-            # una muestra antes de la meseta: todavía sobre la transferencia.
-            # Los otros tres extremos se conservan completos. En particular,
-            # el azul derecho debe llegar al pie de la transferencia y no ser
-            # elevado por una rodilla de golpe/compresion.
+            # Los cuatro puntos deben quedar dentro de la transferencia, no
+            # en el vértice ni sobre las pseudo horizontales. Se recortan una
+            # o dos muestras de cada extremo de la recta lateral; esto vuelve
+            # estable el criterio ante ondulaciones y pequeños rulos.
             orden_carga = indices[np.argsort(y[indices])]
-            recorte_azul = 1 if lado == "derecha" and len(orden_carga) >= 5 else 0
+            recorte_azul = (
+                2 if len(orden_carga) >= 7
+                else 1 if len(orden_carga) >= 5
+                else 0
+            )
             indice_azul = orden_carga[recorte_azul]
             if lado == "izquierda":
                 recorte_rojo = (
@@ -260,20 +263,11 @@ def calcular_sam_modificado(
                     if norma_transferencia > 1e-9 else 0.0
                 )
                 recorte_rojo = (
-                    0 if apertura_transferencia >= 0.25
+                    2 if len(orden_carga) >= 7
                     else 1 if len(orden_carga) >= 5
                     else 0
                 )
             indice_rojo = orden_carga[-1 - recorte_rojo]
-            if lado == "derecha" and apertura_transferencia >= 0.25:
-                vecinos_superiores = [indice_rojo]
-                for desplazamiento in (-2, -1, 1, 2):
-                    vecino = int(indice_rojo + desplazamiento)
-                    if 0 <= vecino < len(y) and mascara[vecino]:
-                        vecinos_superiores.append(vecino)
-                indice_rojo = max(
-                    vecinos_superiores, key=lambda vecino: float(y[vecino])
-                )
 
             # En la derecha la rama descendente continúa, después de la
             # transferencia, por la envolvente inferior. El codo azul es el
@@ -1401,6 +1395,34 @@ def calcular_sam_modificado(
                         float(y_sup_gas[indice]),
                     )
                     break
+            # En rodillas derechas muy agudas el ajuste puede quedarse en la
+            # posición máxima, todavía sobre la horizontal superior. Como
+            # corrección incremental se exige haber iniciado realmente la
+            # carrera descendente: desplazamiento a la izquierda y caída de
+            # carga simultáneos, sin avanzar hasta la horizontal inferior.
+            carga_extremo_derecho = float(np.max(y_desc[
+                x_desc >= x_max_global - 0.02 * rango_x
+            ]))
+            indices_descenso_establecido = np.flatnonzero(
+                (x_desc <= x_max_global - 0.06 * rango_x)
+                & (x_desc >= x_max_global - 0.30 * rango_x)
+                & (y_desc <= carga_extremo_derecho - 0.025 * rango_y)
+                & (y_desc >= y_min_global + 0.52 * rango_y)
+            )
+            if len(indices_descenso_establecido):
+                indice_descenso = int(indices_descenso_establecido[
+                    np.argmax(y_desc[indices_descenso_establecido])
+                ])
+                rojo_descenso_establecido = (
+                    float(x_desc[indice_descenso]),
+                    float(y_desc[indice_descenso]),
+                )
+                if (
+                    rojo_gas_der is None
+                    or rojo_gas_der[1]
+                    > rojo_descenso_establecido[1] + 0.015 * rango_y
+                ):
+                    rojo_gas_der = rojo_descenso_establecido
             if (
                 rojo_gas_der is not None
                 and rojo_gas_der[1] > azul_derecha + 0.12 * rango_y
@@ -1555,8 +1577,7 @@ def calcular_sam_modificado(
                     )
                     ajuste_superior_arqueado_aplicado = True
         if (
-            not morfologia_valvula_viajera
-            and not morfologia_compresion_gas
+            not morfologia_compresion_gas
             and not ajuste_superior_arqueado_aplicado
             and all(punto is not None for punto in geometria.values())
         ):
@@ -1564,6 +1585,63 @@ def calcular_sam_modificado(
             rojo_geom_der = geometria["rojo_der"][:2]
             azul_geom_izq = geometria["azul_izq"][:2]
             azul_geom_der = geometria["azul_der"][:2]
+            # Rectangulares normales: si ambos laterales cubren gran parte de
+            # la carga con poca variación de posición, se usan bandas internas
+            # de esas verticales. Es independiente de la densidad de muestreo
+            # y evita elegir el vértice de la horizontal o saltar demasiadas
+            # muestras cuando el lateral está poco discretizado.
+            x_todas = np.concatenate([x_asc, x_desc])
+            y_todas = np.concatenate([y_asc, y_desc])
+
+            def puntos_banda_lateral(lado):
+                if lado == "izquierda":
+                    mascara_lateral = (
+                        x_todas <= x_min_global + 0.16 * rango_x
+                    )
+                else:
+                    mascara_lateral = (
+                        x_todas >= x_max_global - 0.16 * rango_x
+                    )
+                indices_lateral = np.flatnonzero(mascara_lateral)
+                if (
+                    len(indices_lateral) < 6
+                    or np.ptp(y_todas[indices_lateral]) < 0.48 * rango_y
+                    or np.ptp(x_todas[indices_lateral]) > 0.17 * rango_x
+                ):
+                    return None
+                objetivo_azul = y_min_global + 0.28 * rango_y
+                objetivo_rojo = y_min_global + 0.75 * rango_y
+                distancia_exterior = (
+                    (x_todas[indices_lateral] - x_min_global) / rango_x
+                    if lado == "izquierda"
+                    else (x_max_global - x_todas[indices_lateral]) / rango_x
+                )
+                score_azul_banda = (
+                    abs(y_todas[indices_lateral] - objetivo_azul) / rango_y
+                    + 0.30 * distancia_exterior
+                )
+                score_rojo_banda = (
+                    abs(y_todas[indices_lateral] - objetivo_rojo) / rango_y
+                    + 0.30 * distancia_exterior
+                )
+                indice_azul = int(indices_lateral[np.argmin(
+                    score_azul_banda
+                )])
+                indice_rojo = int(indices_lateral[np.argmin(
+                    score_rojo_banda
+                )])
+                return (
+                    (float(x_todas[indice_azul]),
+                     float(y_todas[indice_azul])),
+                    (float(x_todas[indice_rojo]),
+                     float(y_todas[indice_rojo])),
+                )
+
+            banda_izquierda = puntos_banda_lateral("izquierda")
+            banda_derecha = puntos_banda_lateral("derecha")
+            if banda_izquierda is not None and banda_derecha is not None:
+                azul_geom_izq, _ = banda_izquierda
+                azul_geom_der, rojo_geom_der = banda_derecha
             superior_geom = 0.5 * (
                 rojo_geom_izq[1] + rojo_geom_der[1]
             )
@@ -7287,7 +7365,7 @@ def procesar_json(
 
         # Debe ser profundo, estrecho y estar realmente en el extremo.
         localizado = bool(
-            profundidad_max_pct >= 12
+            profundidad_max_pct >= 10.5
             and ancho_pct <= 18
             and posicion_minimo_pct <= 15
             and len(indices) <= max(8, int(0.25 * len(x)))
@@ -7309,6 +7387,47 @@ def procesar_json(
             "Golpe_Localizado_Izquierda":
                 localizado,
         }
+
+    def detectar_rulo_golpe_bomba_izquierdo(posicion, carga):
+        """Detecta un rulo angosto en el extremo inferior izquierdo.
+
+        Complementa el criterio de profundidad: algunos impactos vuelven
+        sobre sí mismos sin caer suficientemente bajo la horizontal de
+        referencia. Se exige una reversión lateral real, angosta, localizada
+        y con transferencia apreciable de carga para no confundir el ruido
+        casi vertical de cartas normales.
+        """
+        x = np.asarray(posicion, dtype=float)
+        y = np.asarray(carga, dtype=float)
+        validos = np.isfinite(x) & np.isfinite(y)
+        x, y = x[validos], y[validos]
+        if len(x) < 7:
+            return False
+        rango_x_local = max(float(np.ptp(x)), 1e-9)
+        rango_y_local = max(float(np.ptp(y)), 1e-9)
+        x_min_local = float(np.min(x))
+        xn = (x - x_min_local) / rango_x_local
+        yn = (y - float(np.min(y))) / rango_y_local
+        for inicio in range(len(x) - 4):
+            for fin in range(inicio + 4, min(len(x), inicio + 10)):
+                xx = xn[inicio:fin + 1]
+                yy = yn[inicio:fin + 1]
+                if np.max(xx) > 0.14 or np.ptp(xx) > 0.075:
+                    continue
+                dx = np.diff(xx)
+                dx_significativo = dx[np.abs(dx) >= 0.004]
+                if len(dx_significativo) < 2:
+                    continue
+                reversion = bool(
+                    np.any(dx_significativo > 0)
+                    and np.any(dx_significativo < 0)
+                )
+                retorno = abs(float(xx[-1] - xx[0])) <= 0.035
+                transferencia = float(np.ptp(yy)) >= 0.17
+                zona_inferior = float(np.max(yy)) <= 0.58
+                if reversion and retorno and transferencia and zona_inferior:
+                    return True
+        return False
 
 
     variables_operativas = (
@@ -8279,10 +8398,18 @@ def procesar_json(
             carga_inferior=float(resultado["Carga_Desc_Geometrica"]),
         )
 
+        rulo_golpe_bomba = bool(
+            detectar_rulo_golpe_bomba_izquierdo(
+                resultado["Descendente"]["posicion"],
+                resultado["Descendente"]["carga"],
+            )
+        )
+
         golpe_bomba = bool(
             horizontales_ok
             and (
                 metricas_golpe["Golpe_Localizado_Izquierda"]
+                or (rulo_golpe_bomba and compresion_gas)
                 or (
                     bloqueo_gas_probable
                     and metricas_golpe[
@@ -8392,30 +8519,23 @@ def procesar_json(
                 resultado.get("Carga_Roja_Derecha_SAM_Modificado_lbf"),
                 errors="coerce",
             )
-            aplicar_laterales_bomba = False
-            if (
+            # Cada lateral se valida de forma independiente. Antes se exigía
+            # que rojo izquierdo y azul derecho mejoraran simultáneamente;
+            # esa conjunción dejaba el azul sobre la horizontal aunque su
+            # transferencia derecha fuese inequívoca.
+            aplicar_rojo_izq_bomba = bool(
                 rojo_izq_bomba is not None
-                and azul_der_bomba is not None
-                and np.isfinite([
-                    rojo_izq_actual, rojo_der_actual,
-                    azul_der_actual, superior_actual,
-                ]).all()
+                and np.isfinite(rojo_izq_actual)
                 and rojo_izq_bomba[1]
-                < rojo_izq_actual - 0.02 * rango_y_bomba
+                < rojo_izq_actual - 0.012 * rango_y_bomba
+            )
+            aplicar_azul_der_bomba = bool(
+                azul_der_bomba is not None
+                and np.isfinite(azul_der_actual)
                 and azul_der_bomba[1]
-                > azul_der_actual + 0.02 * rango_y_bomba
-            ):
-                superior_propuesto = 0.5 * (
-                    rojo_izq_bomba[1] + rojo_der_actual
-                )
-                peso_actual_bomba = superior_actual - azul_der_actual
-                peso_propuesto_bomba = (
-                    superior_propuesto - azul_der_bomba[1]
-                )
-                aplicar_laterales_bomba = bool(
-                    0 < peso_propuesto_bomba <= peso_actual_bomba + 1e-9
-                )
-            if aplicar_laterales_bomba:
+                > azul_der_actual + 0.012 * rango_y_bomba
+            )
+            if aplicar_rojo_izq_bomba:
                 resultado["Posicion_Roja_Izquierda_SAM_Modificado_pulg"] = (
                     rojo_izq_bomba[0]
                 )
@@ -8426,6 +8546,7 @@ def procesar_json(
                     resultado["Carga_Superior_SAM_Seleccionada_lbf"] = 0.5 * (
                         rojo_izq_bomba[1] + rojo_der_actual
                     )
+            if aplicar_azul_der_bomba:
                 resultado["Posicion_Azul_Derecha_SAM_Modificado_pulg"] = (
                     azul_der_bomba[0]
                 )
@@ -9253,6 +9374,7 @@ def procesar_json(
                 metricas_golpe["Puntos_Golpe_Inferior"],
             "Golpe_Localizado_Izquierda":
                 metricas_golpe["Golpe_Localizado_Izquierda"],
+            "Rulo_Golpe_Bomba_Izquierdo": rulo_golpe_bomba,
             "Tubing_Libre":
                 tubing_libre,
             "Friccion_Elevada":

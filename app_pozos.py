@@ -46,7 +46,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-20-v81-explorador-solo-sumergencia-propia-7a24"
+    "2026-08-21-v83-codos-en-transferencia-y-rulo-bomba-8c41"
 )
 
 VENTANA_DIAGNOSTICO_ROBUSTO = 6
@@ -768,6 +768,191 @@ def diagnostico_consolidado(cartas_ultimas):
     )
 
 
+ACCIONES_POR_DIAGNOSTICO_ROBUSTO = {
+    "Carta no válida - posible falla de medición o transmisión": (
+        "Revisar celda de carga, sensor de posición, sincronización y transmisión de datos"
+    ),
+    "Posible sin trabajo de bomba": "Revisar bomba, sarta y carta de superficie",
+    "Posible pozo subexplotado": "Evaluar aumento de régimen y revisar alertas secundarias",
+    "Posible golpe de fluido": "Evaluar disminución de régimen",
+    "Posible compresión/interferencia de gas": (
+        "Evaluar condición de admisión y revisar régimen"
+    ),
+    "Posible pérdida en válvula viajera": "Revisar válvula viajera",
+    "Posible cierre tardío de válvula viajera": (
+        "Revisar válvula viajera, suciedad y dispositivo mecánico antibloqueo de gas"
+    ),
+    "Posible golpe de bomba": "Revisar espaciamiento",
+    "Posible tubing libre": "Revisar condición y anclaje del tubing",
+    "Posible fricción elevada": (
+        "Revisar rozamiento de sarta, tubing, alineación y condiciones mecánicas"
+    ),
+    "Exceso de torque": "Revisar balanceo, régimen y capacidad de la caja reductora",
+    "Exceso de carga estructural": (
+        "Revisar carga admisible de la unidad y condición estructural"
+    ),
+    "Pozo bien explotado": "Mantener seguimiento operativo",
+}
+
+
+def diagnosticos_robustos_ventana(cartas):
+    conteos = {}
+    for lista in cartas.get("Diagnosticos_Todos", pd.Series(dtype=object)):
+        for diagnostico in set(lista_alertas(lista)):
+            conteos[diagnostico] = conteos.get(diagnostico, 0) + 1
+    return [
+        diagnostico
+        for diagnostico, cantidad in sorted(
+            conteos.items(), key=lambda item: (-item[1], item[0])
+        )
+        if cantidad >= MIN_REPETICIONES_DIAGNOSTICO_ROBUSTO
+    ]
+
+
+def accion_para_diagnosticos_robustos(diagnosticos):
+    acciones = []
+    for diagnostico in diagnosticos:
+        accion = ACCIONES_POR_DIAGNOSTICO_ROBUSTO.get(diagnostico)
+        if accion and accion not in acciones:
+            acciones.append(accion)
+    return (
+        " · ".join(acciones)
+        if acciones
+        else "Mantener seguimiento hasta confirmar un diagnóstico robusto"
+    )
+
+
+def _pendiente_theil_sen_local(dias, valores):
+    pendientes = []
+    for indice in range(len(valores) - 1):
+        delta_dias = dias[indice + 1:] - dias[indice]
+        validos = delta_dias > 0
+        if np.any(validos):
+            pendientes.extend(
+                ((valores[indice + 1:][validos] - valores[indice])
+                 / delta_dias[validos]).tolist()
+            )
+    return float(np.median(pendientes)) if pendientes else np.nan
+
+
+def resumen_sumergencia_pozo(cartas_pozo):
+    trabajo = cartas_pozo.copy()
+    trabajo["Fecha"] = pd.to_datetime(trabajo["Fecha"], errors="coerce")
+    trabajo["Sumergencia"] = pd.to_numeric(
+        trabajo.get("Sumergencia_SAM_Seleccionada_m"), errors="coerce"
+    )
+    trabajo["Sumergencia_pct"] = pd.to_numeric(
+        trabajo.get("Sumergencia_Relativa_SAM_Seleccionada_pct"),
+        errors="coerce",
+    )
+    trabajo = trabajo.dropna(subset=["Fecha"]).sort_values("Fecha")
+    ultimas_seis = trabajo.tail(VENTANA_DIAGNOSTICO_ROBUSTO)
+    valores_seis = ultimas_seis["Sumergencia"].dropna()
+    representativa = (
+        float(valores_seis.mean()) if not valores_seis.empty else np.nan
+    )
+    porcentajes_seis = ultimas_seis.loc[
+        ultimas_seis["Sumergencia"].notna(), "Sumergencia_pct"
+    ].dropna()
+    representativa_pct = (
+        float(porcentajes_seis.mean()) if not porcentajes_seis.empty else np.nan
+    )
+    negativas_seis = int((valores_seis < 0).sum())
+
+    validas = trabajo.dropna(subset=["Sumergencia"])
+    if validas.empty:
+        return {
+            "representativa": np.nan,
+            "representativa_pct": np.nan,
+            "muestras_representativa": 0,
+            "estado": "Sin datos suficientes",
+            "detalle": "No hay sumergencias SAM válidas para analizar.",
+            "advertencia": "Validar datos cargados y horizontales SAM.",
+            "color": "#e87918",
+        }
+
+    fecha_final = validas["Fecha"].max()
+    fecha_corte = fecha_final - pd.Timedelta(days=15)
+    cubre_15_dias = bool(validas["Fecha"].min() <= fecha_corte)
+    ventana_15d = validas.loc[validas["Fecha"] >= fecha_corte].copy()
+    usar_15d = bool(cubre_15_dias and len(ventana_15d) >= 2)
+    ventana = ventana_15d if usar_15d else validas.copy()
+    etiqueta_ventana = (
+        "últimos 15 días" if usar_15d else "cartas disponibles"
+    )
+    ventana["Dia"] = ventana["Fecha"].dt.floor("D")
+    diaria = (
+        ventana.groupby("Dia", as_index=False)["Sumergencia"]
+        .median().sort_values("Dia")
+    )
+    valores = diaria["Sumergencia"].to_numpy(dtype=float)
+    dias = (
+        (diaria["Dia"] - diaria["Dia"].min())
+        .dt.total_seconds().to_numpy(dtype=float) / 86400.0
+    )
+    pendiente = _pendiente_theil_sen_local(dias, valores)
+    lapso = float(np.ptp(dias)) if len(dias) >= 2 else 0.0
+    mediana = float(np.median(valores))
+    mad = float(np.median(np.abs(valores - mediana)))
+    ruido_robusto = 1.4826 * mad
+    cambio_estimado = pendiente * lapso if np.isfinite(pendiente) else np.nan
+    umbral_cambio = max(15.0, 0.10 * max(abs(mediana), 100.0))
+    volatil = bool(
+        len(valores) >= 3
+        and ruido_robusto > max(20.0, 0.20 * max(abs(mediana), 100.0))
+        and (
+            not np.isfinite(cambio_estimado)
+            or abs(cambio_estimado) < 2.0 * ruido_robusto
+        )
+    )
+    if len(valores) < 2 or lapso <= 0:
+        estado = "Sin datos suficientes"
+        color = "#e87918"
+    elif volatil:
+        estado = "Volátil"
+        color = "#e87918"
+    elif abs(cambio_estimado) <= umbral_cambio:
+        estado = "Estable"
+        color = "#16833b"
+    elif pendiente > 0:
+        estado = "Subiendo"
+        color = "#2563eb"
+    else:
+        estado = "Bajando"
+        color = "#dc2626"
+
+    unidad_dias = "día" if len(diaria) == 1 else "días"
+    detalle = (
+        f"{estado} en {etiqueta_ventana}: "
+        f"{len(ventana)} cartas, {len(diaria)} {unidad_dias} con datos"
+    )
+    if np.isfinite(pendiente):
+        detalle += f", tendencia {pendiente:+.1f} m/día"
+    detalle += "."
+
+    if np.isfinite(representativa) and representativa < 0:
+        advertencia = (
+            "Sumergencia representativa negativa: validar datos cargados, "
+            "diámetro/área de pistón y ubicación de las horizontales SAM."
+        )
+    elif negativas_seis:
+        advertencia = (
+            f"{negativas_seis} de {len(valores_seis)} sumergencias recientes "
+            "son negativas; revisar datos y horizontales de esas cartas."
+        )
+    else:
+        advertencia = "Sin sumergencias negativas en las últimas seis cartas válidas."
+    return {
+        "representativa": representativa,
+        "representativa_pct": representativa_pct,
+        "muestras_representativa": int(len(valores_seis)),
+        "estado": estado,
+        "detalle": detalle,
+        "advertencia": advertencia,
+        "color": color,
+    }
+
+
 def tabla_diagnosticos_robustos(historico):
     """
     Una fila por pozo. Se consideran las últimas seis cartas y un
@@ -1265,7 +1450,7 @@ filtro_robusto = st.sidebar.multiselect(
     "Diagnóstico robusto del pozo",
     diagnosticos_robustos_disponibles,
     help=(
-        "Sólo considera diagnósticos presentes en al menos tres "
+        "Sólo considera diagnósticos presentes en al menos cuatro "
         "de las últimas seis cartas."
     ),
 )
@@ -1840,16 +2025,45 @@ with tab_detalle:
             pagina_pozo * VENTANA_DIAGNOSTICO_ROBUSTO
         ].copy()
 
+        ventana_robusta = cartas_pozo.head(VENTANA_DIAGNOSTICO_ROBUSTO)
         estado, texto_estado, variable = diagnostico_consolidado(
-            cartas_pozo.head(VENTANA_DIAGNOSTICO_ROBUSTO)
+            ventana_robusta
+        )
+        robustos_pozo = diagnosticos_robustos_ventana(ventana_robusta)
+        accion_robusta = accion_para_diagnosticos_robustos(robustos_pozo)
+        resumen_sumergencia = resumen_sumergencia_pozo(cartas_pozo)
+        sumergencia_representativa_texto = valor_texto(
+            resumen_sumergencia["representativa"], ".1f", " m"
+        )
+        sumergencia_representativa_pct_texto = valor_texto(
+            resumen_sumergencia["representativa_pct"], ".1f", "%"
         )
         color_estado = "#16833b" if estado == "Diagnóstico robusto" else "#e87918"
         st.markdown(
             f"""
             <div style="border-left:6px solid {color_estado};padding:10px 14px;
                         background:rgba(128,128,128,.08);border-radius:6px;">
-                <b>{estado}</b><br>{texto_estado}
-                {"<br><b>Atención:</b> existe variación relevante entre cartas o VFM." if variable else ""}
+                <div style="display:flex;gap:28px;flex-wrap:wrap;align-items:flex-start;">
+                    <div style="flex:1;min-width:280px;">
+                        <b>{estado}</b><br>{texto_estado}
+                        {"<br><b>Atención:</b> existe variación relevante entre cartas o VFM." if variable else ""}
+                    </div>
+                    <div style="flex:1;min-width:280px;">
+                        <b>Sumergencia representativa</b><br>
+                        <span style="font-size:1.18rem;">{sumergencia_representativa_texto}
+                        ({sumergencia_representativa_pct_texto})</span>
+                        <small> · promedio de {resumen_sumergencia['muestras_representativa']}
+                        cartas válidas dentro de las últimas seis</small><br>
+                        <span style="color:{resumen_sumergencia['color']};">
+                            <b>{resumen_sumergencia['estado']}</b>
+                        </span> · {resumen_sumergencia['detalle']}<br>
+                        <small>{resumen_sumergencia['advertencia']}</small>
+                    </div>
+                </div>
+                <div style="margin-top:10px;padding-top:8px;
+                            border-top:1px solid rgba(128,128,128,.25);">
+                    <b>Acción recomendada:</b> {accion_robusta}
+                </div>
             </div>
             """,
             unsafe_allow_html=True,
