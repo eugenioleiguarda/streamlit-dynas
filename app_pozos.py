@@ -46,7 +46,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-20-v78-pie-lateral-inferior-izquierdo-gas-b5a2"
+    "2026-08-20-v81-explorador-solo-sumergencia-propia-7a24"
 )
 
 VENTANA_DIAGNOSTICO_ROBUSTO = 6
@@ -1779,16 +1779,15 @@ with tab_explorador:
                         key=f"explorador_{carta_id}_{pagina}",
                     )
                     alertas = " · ".join(diag["Diagnosticos_Todos"])
-                    st.caption(alertas)
+                    st.caption(f"Diagnóstico: {alertas}")
                     st.caption(
                         "Llenado "
-                        f"{valor_texto(diag.get('Llenado_Operativo_pct'), '.1f', '%')} · "
-                        "Sumergencia API "
-                        f"{valor_texto(diag.get('Sumergencia_Relativa_pct'), '.1f', '%')} · "
-                        "propia "
-                        f"{valor_texto(diag.get('Sumergencia_Relativa_SAM_Seleccionada_pct'), '.1f', '%')} · "
-                        "Δ propia−API "
-                        f"{valor_texto(diag.get('Delta_Sumergencia_SAM_Seleccionada_vs_API_m'), '+.1f', ' m')} · "
+                        f"{valor_texto(diag.get('Llenado_Diagnostico_pct'), '.1f', '%')} · "
+                        "Sumergencia propia "
+                        f"{valor_texto(diag.get('Sumergencia_SAM_Seleccionada_m'), '.1f', ' m')} "
+                        "("
+                        f"{valor_texto(diag.get('Sumergencia_Relativa_SAM_Seleccionada_pct'), '.1f', '%')}"
+                        ") · "
                         "Carrera fondo "
                         f"{valor_texto(carrera_fondo_carta(cartas_por_id[carta_id]), '.1f', ' pulg')} · "
                         "VFM bruto "

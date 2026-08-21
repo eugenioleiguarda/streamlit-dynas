@@ -1118,6 +1118,7 @@ def calcular_sam_modificado(
                 > azul_derecha + 0.35 * rango_y
             ):
                 x_roja_der, roja_derecha = rojo_derecho_oblicua
+
             salida["Metodo_SAM_Seleccionado"] = (
                 "SAM_MODIFICADO_MORFOLOGIA_VALVULA_VIAJERA"
             )
@@ -1415,8 +1416,102 @@ def calcular_sam_modificado(
                 )
             ):
                 x_azul_der, azul_derecha = azul_gas_der
+
+            # Rectangular con ondulaciones de fondo: los agarres pueden
+            # producir falsos codos interiores. Se exige una meseta central
+            # extensa y se recorren los laterales reales en el orden de la
+            # traza. El azul derecho se toma antes del salto a la horizontal.
+            mascara_central_asc = (
+                (x_asc >= x_min_global + 0.18 * rango_x)
+                & (x_asc <= x_min_global + 0.76 * rango_x)
+            )
+            mascara_central_desc = (
+                (x_desc >= x_min_global + 0.18 * rango_x)
+                & (x_desc <= x_min_global + 0.76 * rango_x)
+            )
+            lateral_derecho_desc = y_desc[
+                x_desc >= x_max_global - 0.08 * rango_x
+            ]
+            rectangular_ruidosa = bool(
+                np.count_nonzero(mascara_central_asc) >= 5
+                and np.count_nonzero(mascara_central_desc) >= 5
+                and len(lateral_derecho_desc) >= 5
+                and np.ptp(y_asc[mascara_central_asc]) <= 0.20 * rango_y
+                and np.ptp(y_desc[mascara_central_desc]) <= 0.36 * rango_y
+                and np.ptp(lateral_derecho_desc) >= 0.34 * rango_y
+            )
+            if rectangular_ruidosa:
+                # Ascendente orientada desde el lateral izquierdo.
+                if x_asc[0] <= x_min_global + 0.08 * rango_x:
+                    xa_rect, ya_rect = x_asc, y_asc
+                else:
+                    xa_rect, ya_rect = x_asc[::-1], y_asc[::-1]
+                candidatos_inicio_izq = np.flatnonzero(
+                    xa_rect <= x_min_global + 0.025 * rango_x
+                )
+                rojo_rect_izq = None
+                if len(candidatos_inicio_izq):
+                    indice = int(candidatos_inicio_izq[0])
+                    if ya_rect[indice] > azul_izquierda + 0.25 * rango_y:
+                        rojo_rect_izq = (
+                            float(xa_rect[indice]), float(ya_rect[indice])
+                        )
+
+                # Descendente orientada desde el extremo superior derecho.
+                if x_desc[0] >= x_max_global - 0.08 * rango_x:
+                    xd_rect, yd_rect = x_desc, y_desc
+                else:
+                    xd_rect, yd_rect = x_desc[::-1], y_desc[::-1]
+                rojo_rect_der = None
+                if len(xd_rect):
+                    objetivo_caida = yd_rect[0] - 0.10 * rango_y
+                    candidatos = np.flatnonzero(
+                        (xd_rect >= x_max_global - 0.04 * rango_x)
+                        & (yd_rect <= objetivo_caida)
+                    )
+                    if len(candidatos):
+                        indice = int(candidatos[0])
+                        rojo_rect_der = (
+                            float(xd_rect[indice]), float(yd_rect[indice])
+                        )
+
+                azul_rect_der = None
+                desplazamiento_rect = (
+                    x_max_global - xd_rect
+                ) / rango_x
+                for k in range(1, len(xd_rect) - 2):
+                    if desplazamiento_rect[k] >= 0.020:
+                        indice = k
+                        azul_rect_der = (
+                            float(xd_rect[indice]), float(yd_rect[indice])
+                        )
+                        break
+
+                if all(punto is not None for punto in (
+                    rojo_rect_izq, rojo_rect_der, azul_rect_der
+                )):
+                    superior_rect = 0.5 * (
+                        rojo_rect_izq[1] + rojo_rect_der[1]
+                    )
+                    inferior_rect = 0.5 * (
+                        azul_izquierda + azul_rect_der[1]
+                    )
+                    peso_actual = 0.5 * (
+                        roja_izquierda + roja_derecha
+                    ) - 0.5 * (azul_izquierda + azul_derecha)
+                    peso_rect = superior_rect - inferior_rect
+                    if 0.20 * rango_y <= peso_rect <= peso_actual + 1e-9:
+                        x_roja_izq, roja_izquierda = rojo_rect_izq
+                        x_roja_der, roja_derecha = rojo_rect_der
+                        x_azul_der, azul_derecha = azul_rect_der
+                        salida["Metodo_SAM_Seleccionado"] = (
+                            "SAM_MODIFICADO_RECTANGULAR_RUIDO_LATERALES"
+                        )
             salida["Metodo_SAM_Seleccionado"] = (
-                "SAM_MODIFICADO_MORFOLOGIA_COMPRESION_GAS"
+                salida.get("Metodo_SAM_Seleccionado")
+                if salida.get("Metodo_SAM_Seleccionado")
+                == "SAM_MODIFICADO_RECTANGULAR_RUIDO_LATERALES"
+                else "SAM_MODIFICADO_MORFOLOGIA_COMPRESION_GAS"
             )
         elif morfologia_superior_arqueada:
             objetivo_rojos = y_min_global + 0.66 * rango_y
@@ -7535,7 +7630,10 @@ def procesar_json(
         )
         apertura_central_carta = medir_apertura_central(resultado)
         sumergencia_preliminar = pd.to_numeric(
-            metrica.get("Sumergencia_Relativa_pct", np.nan),
+            resultado.get(
+                "Sumergencia_Relativa_SAM_Seleccionada_pct",
+                np.nan,
+            ),
             errors="coerce",
         )
 
@@ -8216,6 +8314,125 @@ def procesar_json(
                 "SOLO_CODO_AZUL_DERECHO"
             )
             resultado["Azul_Izquierdo_Incluido_SAM_Modificado"] = False
+
+            # En una carta rectangular el impacto izquierdo no invalida los
+            # otros laterales. Se recorren las ramas en su orden físico y se
+            # toma la primera salida sostenida de cada vertical: arriba a la
+            # izquierda para el rojo y abajo a la derecha para el único azul.
+            x_asc_bomba = np.asarray(
+                resultado["Ascendente"]["posicion"], dtype=float
+            )
+            y_asc_bomba = np.asarray(
+                resultado["Ascendente"]["carga"], dtype=float
+            )
+            x_desc_bomba = np.asarray(
+                resultado["Descendente"]["posicion"], dtype=float
+            )
+            y_desc_bomba = np.asarray(
+                resultado["Descendente"]["carga"], dtype=float
+            )
+            x_min_bomba = float(min(np.min(x_asc_bomba), np.min(x_desc_bomba)))
+            x_max_bomba = float(max(np.max(x_asc_bomba), np.max(x_desc_bomba)))
+            rango_x_bomba = max(x_max_bomba - x_min_bomba, 1e-9)
+            y_min_bomba = float(min(np.min(y_asc_bomba), np.min(y_desc_bomba)))
+            y_max_bomba = float(max(np.max(y_asc_bomba), np.max(y_desc_bomba)))
+            rango_y_bomba = max(y_max_bomba - y_min_bomba, 1e-9)
+
+            def salida_sostenida_lateral(x, y, lado):
+                x = np.asarray(x, dtype=float)
+                y = np.asarray(y, dtype=float)
+                if len(x) < 7:
+                    return None
+                # Orientar la traza desde el extremo lateral que transfiere
+                # carga hacia la pseudo horizontal correspondiente.
+                if lado == "izquierda":
+                    inicio = int(np.argmin(x + 0.03 * (y - y_min_bomba)
+                                          / rango_y_bomba * rango_x_bomba))
+                    recorrido = np.arange(inicio, len(x))
+                    if len(recorrido) < 5:
+                        recorrido = np.arange(inicio, -1, -1)
+                    desplazamiento = (x[recorrido] - x_min_bomba) / rango_x_bomba
+                else:
+                    inicio = int(np.argmax(x + 0.03 * (y - y_min_bomba)
+                                          / rango_y_bomba * rango_x_bomba))
+                    recorrido = np.arange(inicio, len(x))
+                    if len(recorrido) < 5:
+                        recorrido = np.arange(inicio, -1, -1)
+                    desplazamiento = (x_max_bomba - x[recorrido]) / rango_x_bomba
+                for k in range(1, len(recorrido) - 2):
+                    futuras = desplazamiento[k:k + 3]
+                    if (
+                        futuras[0] >= 0.012
+                        and np.count_nonzero(np.diff(futuras) >= -0.004) >= 1
+                        and futuras[-1] >= 0.025
+                    ):
+                        indice = int(recorrido[max(0, k - 1)])
+                        return float(x[indice]), float(y[indice])
+                return None
+
+            rojo_izq_bomba = salida_sostenida_lateral(
+                x_asc_bomba, y_asc_bomba, "izquierda"
+            )
+            azul_der_bomba = salida_sostenida_lateral(
+                x_desc_bomba, y_desc_bomba, "derecha"
+            )
+            rojo_izq_actual = pd.to_numeric(
+                resultado.get("Carga_Roja_Izquierda_SAM_Modificado_lbf"),
+                errors="coerce",
+            )
+            azul_der_actual = pd.to_numeric(
+                resultado.get("Carga_Azul_Derecha_SAM_Modificado_lbf"),
+                errors="coerce",
+            )
+            superior_actual = pd.to_numeric(
+                resultado.get("Carga_Superior_SAM_Seleccionada_lbf"),
+                errors="coerce",
+            )
+            rojo_der_actual = pd.to_numeric(
+                resultado.get("Carga_Roja_Derecha_SAM_Modificado_lbf"),
+                errors="coerce",
+            )
+            aplicar_laterales_bomba = False
+            if (
+                rojo_izq_bomba is not None
+                and azul_der_bomba is not None
+                and np.isfinite([
+                    rojo_izq_actual, rojo_der_actual,
+                    azul_der_actual, superior_actual,
+                ]).all()
+                and rojo_izq_bomba[1]
+                < rojo_izq_actual - 0.02 * rango_y_bomba
+                and azul_der_bomba[1]
+                > azul_der_actual + 0.02 * rango_y_bomba
+            ):
+                superior_propuesto = 0.5 * (
+                    rojo_izq_bomba[1] + rojo_der_actual
+                )
+                peso_actual_bomba = superior_actual - azul_der_actual
+                peso_propuesto_bomba = (
+                    superior_propuesto - azul_der_bomba[1]
+                )
+                aplicar_laterales_bomba = bool(
+                    0 < peso_propuesto_bomba <= peso_actual_bomba + 1e-9
+                )
+            if aplicar_laterales_bomba:
+                resultado["Posicion_Roja_Izquierda_SAM_Modificado_pulg"] = (
+                    rojo_izq_bomba[0]
+                )
+                resultado["Carga_Roja_Izquierda_SAM_Modificado_lbf"] = (
+                    rojo_izq_bomba[1]
+                )
+                if np.isfinite(rojo_der_actual):
+                    resultado["Carga_Superior_SAM_Seleccionada_lbf"] = 0.5 * (
+                        rojo_izq_bomba[1] + rojo_der_actual
+                    )
+                resultado["Posicion_Azul_Derecha_SAM_Modificado_pulg"] = (
+                    azul_der_bomba[0]
+                )
+                resultado["Carga_Azul_Derecha_SAM_Modificado_lbf"] = (
+                    azul_der_bomba[1]
+                )
+
             for tabla_sam in (resultados_cartas, base_diagnosticos):
                 mascara_carta_sam = tabla_sam["CartaId"].astype(int) == carta_id
                 tabla_sam.loc[
@@ -8283,6 +8500,17 @@ def procesar_json(
                     "Nivel_Dinamico_SAM_Modificado_m": (
                         profundidad_sam - sumergencia_sam
                     ),
+                    "Carga_Roja_Izquierda_SAM_Modificado_lbf": resultado.get(
+                        "Carga_Roja_Izquierda_SAM_Modificado_lbf", np.nan
+                    ),
+                    "Posicion_Roja_Izquierda_SAM_Modificado_pulg": resultado.get(
+                        "Posicion_Roja_Izquierda_SAM_Modificado_pulg", np.nan
+                    ),
+                    "Carga_Azul_Derecha_SAM_Modificado_lbf": azul_derecho,
+                    "Posicion_Azul_Derecha_SAM_Modificado_pulg": resultado.get(
+                        "Posicion_Azul_Derecha_SAM_Modificado_pulg", np.nan
+                    ),
+                    "Carga_Superior_SAM_Seleccionada_lbf": superior_sam,
                 }
                 for campo, valor in correccion_sam.items():
                     resultado[campo] = valor
@@ -8303,6 +8531,146 @@ def procesar_json(
                 base_diagnosticos.loc[
                     mascara_carta_base, "Sumergencia_Usada_m"
                 ] = sumergencia_sam
+
+        # Fine tuning exclusivo para pérdida en viajera ya confirmada. Se
+        # ejecuta después de evaluar golpe de bomba para que una corrección
+        # visual no cambie la clasificación morfológica de la carta.
+        if perdida_valvula and not golpe_bomba:
+            resultado = resultado.copy()
+            x_asc_viajera = np.asarray(
+                resultado["Ascendente"]["posicion"], dtype=float
+            )
+            y_asc_viajera = np.asarray(
+                resultado["Ascendente"]["carga"], dtype=float
+            )
+            x_min_viajera = float(np.min(x_asc_viajera))
+            x_max_viajera = float(np.max(x_asc_viajera))
+            rango_x_viajera = max(x_max_viajera - x_min_viajera, 1e-9)
+            y_todas_viajera = np.concatenate([
+                y_asc_viajera,
+                np.asarray(resultado["Descendente"]["carga"], dtype=float),
+            ])
+            rango_y_viajera = max(float(np.ptp(y_todas_viajera)), 1e-9)
+            rojo_izq_actual = pd.to_numeric(
+                resultado.get("Carga_Roja_Izquierda_SAM_Modificado_lbf"),
+                errors="coerce",
+            )
+            rojo_der_actual = pd.to_numeric(
+                resultado.get("Carga_Roja_Derecha_SAM_Modificado_lbf"),
+                errors="coerce",
+            )
+            azul_izq_actual = pd.to_numeric(
+                resultado.get("Carga_Azul_Izquierda_SAM_Modificado_lbf"),
+                errors="coerce",
+            )
+            azul_der_actual = pd.to_numeric(
+                resultado.get("Carga_Azul_Derecha_SAM_Modificado_lbf"),
+                errors="coerce",
+            )
+
+            def rojo_adentro_oblicua(lado, rojo_actual, azul_actual):
+                mascara = (
+                    x_asc_viajera <= x_min_viajera + 0.34 * rango_x_viajera
+                    if lado == "izquierda"
+                    else x_asc_viajera >= x_max_viajera - 0.34 * rango_x_viajera
+                )
+                indices = np.flatnonzero(
+                    mascara
+                    & (y_asc_viajera < rojo_actual - 0.012 * rango_y_viajera)
+                    & (y_asc_viajera > azul_actual + 0.30 * rango_y_viajera)
+                )
+                if len(indices) == 0:
+                    return None
+                objetivo = rojo_actual - 0.035 * rango_y_viajera
+                indice = int(indices[np.argmin(
+                    abs(y_asc_viajera[indices] - objetivo)
+                )])
+                return (
+                    float(x_asc_viajera[indice]),
+                    float(y_asc_viajera[indice]),
+                )
+
+            rojo_izq_nuevo = rojo_adentro_oblicua(
+                "izquierda", rojo_izq_actual, azul_izq_actual
+            )
+            rojo_der_nuevo = rojo_adentro_oblicua(
+                "derecha", rojo_der_actual, azul_der_actual
+            )
+            inferior_viajera = pd.to_numeric(
+                resultado.get("Carga_Inferior_SAM_Seleccionada_lbf"),
+                errors="coerce",
+            )
+            superior_actual = pd.to_numeric(
+                resultado.get("Carga_Superior_SAM_Seleccionada_lbf"),
+                errors="coerce",
+            )
+            area_viajera = pd.to_numeric(
+                resultado.get("Area_Piston_SAM_pulg2"), errors="coerce"
+            )
+            gradiente_viajera = pd.to_numeric(
+                resultado.get("Gradiente_SAM_psi_m"), errors="coerce"
+            )
+            descarga_viajera = pd.to_numeric(
+                resultado.get("Presion_Descarga_Bomba_SAM_psi"), errors="coerce"
+            )
+            casing_viajera = pd.to_numeric(
+                resultado.get("Presion_Casing_SAM_kg_cm2"), errors="coerce"
+            )
+            profundidad_viajera = pd.to_numeric(
+                resultado.get("Profundidad_Bomba_m"), errors="coerce"
+            )
+            if (
+                rojo_izq_nuevo is not None
+                and rojo_der_nuevo is not None
+                and np.isfinite([
+                    inferior_viajera, superior_actual, area_viajera,
+                    gradiente_viajera, descarga_viajera, casing_viajera,
+                    profundidad_viajera,
+                ]).all()
+            ):
+                superior_nuevo = 0.5 * (
+                    rojo_izq_nuevo[1] + rojo_der_nuevo[1]
+                )
+                peso_actual = superior_actual - inferior_viajera
+                peso_nuevo = superior_nuevo - inferior_viajera
+                if 0 < peso_nuevo <= peso_actual + 1e-9:
+                    pip_nuevo = descarga_viajera - peso_nuevo / area_viajera
+                    sumergencia_nueva = (
+                        pip_nuevo - casing_viajera * KG_CM2_A_PSI
+                    ) / gradiente_viajera
+                    correccion_viajera = {
+                        "Carga_Roja_Izquierda_SAM_Modificado_lbf": rojo_izq_nuevo[1],
+                        "Posicion_Roja_Izquierda_SAM_Modificado_pulg": rojo_izq_nuevo[0],
+                        "Carga_Roja_Derecha_SAM_Modificado_lbf": rojo_der_nuevo[1],
+                        "Posicion_Roja_Derecha_SAM_Modificado_pulg": rojo_der_nuevo[0],
+                        "Carga_Superior_SAM_Seleccionada_lbf": superior_nuevo,
+                        "Peso_Fluido_SAM_Seleccionado_lbf": peso_nuevo,
+                        "Diferencial_Carga_SAM_psi": peso_nuevo / area_viajera,
+                        "PIP_SAM_Seleccionado_psi": pip_nuevo,
+                        "Sumergencia_SAM_Seleccionada_m": sumergencia_nueva,
+                        "Sumergencia_Relativa_SAM_Seleccionada_pct": (
+                            100.0 * sumergencia_nueva / profundidad_viajera
+                        ),
+                        "Nivel_Dinamico_SAM_Modificado_m": (
+                            profundidad_viajera - sumergencia_nueva
+                        ),
+                    }
+                    for campo, valor in correccion_viajera.items():
+                        resultado[campo] = valor
+                        for tabla_sam in (resultados_cartas, base_diagnosticos):
+                            tabla_sam.loc[
+                                tabla_sam["CartaId"].astype(int) == carta_id,
+                                campo,
+                            ] = valor
+                    mascara_carta_base = (
+                        base_diagnosticos["CartaId"].astype(int) == carta_id
+                    )
+                    base_diagnosticos.loc[
+                        mascara_carta_base, "Peso_Fluido_Usado_lbf"
+                    ] = peso_nuevo
+                    base_diagnosticos.loc[
+                        mascara_carta_base, "Sumergencia_Usada_m"
+                    ] = sumergencia_nueva
 
         # Si la transferencia derecha no pudo medirse y la carta conserva
         # un llenado alto, un vacío superior pequeño y solamente un
@@ -8391,7 +8759,7 @@ def procesar_json(
         sumergencia_relativa = pd.to_numeric(
             resultado.get(
                 "Sumergencia_Relativa_SAM_Seleccionada_pct",
-                metrica["Sumergencia_Relativa_pct"],
+                np.nan,
             ),
             errors="coerce",
         )
@@ -9488,10 +9856,12 @@ def procesar_json(
         "Carga_Superior_SAM_Seleccionada_lbf",
         "Carga_Inferior_SAM_Seleccionada_lbf",
         "Peso_Fluido_SAM_Seleccionado_lbf",
+        "Peso_Fluido_Diagnostico_lbf",
         "Diferencial_Carga_SAM_psi",
         "Presion_Descarga_Bomba_SAM_psi",
         "PIP_SAM_Seleccionado_psi",
         "Sumergencia_SAM_Seleccionada_m",
+        "Sumergencia_Diagnostico_m",
         "Sumergencia_Relativa_SAM_Seleccionada_pct",
         "Nivel_Dinamico_SAM_Modificado_m",
         "Delta_Sumergencia_SAM_Seleccionada_vs_API_m",
