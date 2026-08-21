@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import json
 from math import ceil
+from textwrap import dedent
 
 import numpy as np
 import pandas as pd
@@ -46,7 +47,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-21-v83-codos-en-transferencia-y-rulo-bomba-8c41"
+    "2026-08-21-v85-render-resumen-y-accion-negativa-e3a6"
 )
 
 VENTANA_DIAGNOSTICO_ROBUSTO = 6
@@ -2032,6 +2033,15 @@ with tab_detalle:
         robustos_pozo = diagnosticos_robustos_ventana(ventana_robusta)
         accion_robusta = accion_para_diagnosticos_robustos(robustos_pozo)
         resumen_sumergencia = resumen_sumergencia_pozo(cartas_pozo)
+        if (
+            np.isfinite(resumen_sumergencia["representativa"])
+            and resumen_sumergencia["representativa"] < 0
+        ):
+            accion_robusta = (
+                "Validar datos cargados, diámetro/área de pistón y "
+                "horizontales SAM antes de aplicar la acción del diagnóstico. "
+                f"Luego: {accion_robusta.lower()}"
+            )
         sumergencia_representativa_texto = valor_texto(
             resumen_sumergencia["representativa"], ".1f", " m"
         )
@@ -2039,8 +2049,8 @@ with tab_detalle:
             resumen_sumergencia["representativa_pct"], ".1f", "%"
         )
         color_estado = "#16833b" if estado == "Diagnóstico robusto" else "#e87918"
-        st.markdown(
-            f"""
+        bloque_resumen_pozo = " ".join(
+            linea.strip() for linea in dedent(f"""
             <div style="border-left:6px solid {color_estado};padding:10px 14px;
                         background:rgba(128,128,128,.08);border-radius:6px;">
                 <div style="display:flex;gap:28px;flex-wrap:wrap;align-items:flex-start;">
@@ -2065,7 +2075,10 @@ with tab_detalle:
                     <b>Acción recomendada:</b> {accion_robusta}
                 </div>
             </div>
-            """,
+            """).splitlines() if linea.strip()
+        )
+        st.markdown(
+            bloque_resumen_pozo,
             unsafe_allow_html=True,
         )
 

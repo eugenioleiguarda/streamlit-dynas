@@ -9271,6 +9271,23 @@ def procesar_json(
             accion = "Mantener seguimiento operativo"
             confianza = 0.60
 
+        # Las correcciones morfológicas posteriores al diagnóstico se hacen
+        # sobre la Serie local ``resultado``. Se sincronizan también con las
+        # tablas canónicas: la app reconstruye su tabla desde
+        # ``resultados_cartas`` y, sin esta propagación, recuperaba los SAM
+        # previos aunque ``diagnosticos_cartas`` ya mostrara los nuevos.
+        campos_sam_sincronizar = [
+            campo for campo in resultado.index
+            if "SAM_" in str(campo) or "SAM_Modificado" in str(campo)
+        ]
+        for tabla_sam in (resultados_cartas, base_diagnosticos):
+            mascara_carta_sam = tabla_sam["CartaId"].astype(int) == carta_id
+            for campo_sam in campos_sam_sincronizar:
+                if campo_sam in tabla_sam.columns:
+                    tabla_sam.loc[
+                        mascara_carta_sam, campo_sam
+                    ] = resultado.get(campo_sam, np.nan)
+
         filas_diagnosticos.append({
             "CartaId": carta_id,
             "Pozo": metrica["Pozo"],
