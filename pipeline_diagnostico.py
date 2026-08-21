@@ -1206,6 +1206,7 @@ def calcular_sam_modificado(
                 return None
             xn = (xx - x_min_global) / rango_x
             yn = (yy - y_min_global) / rango_y
+
             mejor = None
             for corte in range(3, len(xx) - 3):
                 if (
@@ -1230,6 +1231,92 @@ def calcular_sam_modificado(
                         coef_despues, xn[corte:]
                     )) ** 2)
                 )
+                if mejor is None or residuo < mejor[0]:
+                    mejor = (residuo, corte)
+            if mejor is None:
+                return None
+            indice = mejor[1]
+            return float(xx[indice]), float(yy[indice])
+
+        def fin_rodilla_superior_derecha_gas(x, y, x_inicio):
+            """Hombro posterior a la recuperación de carga en cartas con gas.
+
+            Ajusta dos rectas sobre la recuperación derecha: una al tramo
+            empinado que sale de la zona inferior y otra al tramo posterior,
+            de menor pendiente. El empalme representa el final de la rodilla,
+            aun cuando la curva no llegue a formar una meseta horizontal.
+            """
+            orden = np.argsort(x, kind="stable")
+            xx = np.asarray(x, dtype=float)[orden]
+            yy = np.asarray(y, dtype=float)[orden]
+
+            # Los retornos verticales y las muestras repetidas en posición
+            # sesgan fuertemente las derivadas. Se consolidan por mediana.
+            x_unicos = np.unique(xx)
+            y_unicos = np.asarray([
+                float(np.median(yy[np.isclose(xx, valor)]))
+                for valor in x_unicos
+            ])
+            mascara = x_unicos >= max(
+                float(x_inicio), x_min_global + 0.45 * rango_x
+            )
+            xx = x_unicos[mascara]
+            yy = y_unicos[mascara]
+            if len(xx) < 10 or np.ptp(xx) < 0.22 * rango_x:
+                return None
+
+            xn = (xx - x_min_global) / rango_x
+            yn = (yy - y_min_global) / rango_y
+
+            # La transferencia de gas es progresiva: recorrer del 20 al
+            # 80 % de carga consume una fracción apreciable de la carrera.
+            # Este filtro evita aplicar el ajuste a golpes de fluido, cuya
+            # transferencia derecha es mucho más abrupta.
+            amplitud_recuperacion = float(np.ptp(yn))
+            if amplitud_recuperacion < 0.20:
+                return None
+            yn_recuperacion = (yn - float(np.min(yn))) / amplitud_recuperacion
+            cruces_20 = np.flatnonzero(yn_recuperacion >= 0.20)
+            cruces_80 = np.flatnonzero(yn_recuperacion >= 0.80)
+            if len(cruces_20) == 0 or len(cruces_80) == 0:
+                return None
+            ancho_transferencia = float(
+                xn[int(cruces_80[0])] - xn[int(cruces_20[0])]
+            )
+            if (
+                ancho_transferencia < 0.20
+                and x_min_global >= 0.0
+            ):
+                return None
+
+            mejor = None
+            for corte in range(4, len(xx) - 3):
+                ancho_antes = float(xn[corte] - xn[0])
+                ancho_despues = float(xn[-1] - xn[corte])
+                if ancho_antes < 0.10 or ancho_despues < 0.055:
+                    continue
+                coef_antes = np.polyfit(xn[:corte + 1], yn[:corte + 1], 1)
+                coef_despues = np.polyfit(xn[corte:], yn[corte:], 1)
+                pendiente_antes = float(coef_antes[0])
+                pendiente_despues = float(coef_despues[0])
+                reduccion = pendiente_antes - pendiente_despues
+                if (
+                    pendiente_antes < 0.42
+                    or reduccion < max(0.12, 0.16 * pendiente_antes)
+                    or pendiente_despues < -0.12
+                ):
+                    continue
+                residuo = float(
+                    np.mean((yn[:corte + 1] - np.polyval(
+                        coef_antes, xn[:corte + 1]
+                    )) ** 2)
+                    + np.mean((yn[corte:] - np.polyval(
+                        coef_despues, xn[corte:]
+                    )) ** 2)
+                )
+                # Evita que pequeñas ondulaciones del extremo ganen frente
+                # al hombro principal de la S de recuperación.
+                residuo += 0.0025 * max(0.0, 0.09 - ancho_despues)
                 if mejor is None or residuo < mejor[0]:
                     mejor = (residuo, corte)
             if mejor is None:
@@ -1273,9 +1360,13 @@ def calcular_sam_modificado(
                     x_min_global + 0.45 * rango_x,
                 )
             ))
-            rojo_gas_der = None
+            rojo_gas_der = fin_rodilla_superior_derecha_gas(
+                x_desc, y_desc, x_azul_der
+            )
             vio_recuperacion_fuerte = False
             for k in range(inicio_gas, len(pendientes_gas) - 1):
+                if rojo_gas_der is not None:
+                    break
                 entorno = pendientes_gas[max(inicio_gas, k - 1):k + 2]
                 entorno = entorno[np.isfinite(entorno)]
                 if len(entorno) < 2:
