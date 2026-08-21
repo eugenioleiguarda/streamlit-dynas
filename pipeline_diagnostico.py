@@ -1341,6 +1341,24 @@ def calcular_sam_modificado(
             ):
                 x_azul_izq, azul_izquierda = azul_gas_izq[:2]
 
+            # En fondos ondulados, un valle interior puede parecer un codo
+            # inferior. El azul izquierdo debe haber alcanzado realmente el
+            # lateral: poca variación de posición mientras se transfiere una
+            # fracción importante de carga. El detector lateral original de
+            # la ascendente aporta ese pie y sólo reemplaza al candidato si
+            # éste todavía está materialmente desplazado hacia el interior.
+            azul_lateral_izq = candidato_izquierdo_base[:2]
+            if (
+                x_azul_izq > azul_lateral_izq[0] + 0.055 * rango_x
+                and azul_lateral_izq[0]
+                <= x_min_global + 0.055 * rango_x
+                and azul_lateral_izq[1]
+                > azul_izquierda + 0.03 * rango_y
+                and azul_lateral_izq[1]
+                <= roja_izquierda - 0.18 * rango_y
+            ):
+                x_azul_izq, azul_izquierda = azul_lateral_izq
+
             # Cierre derecho no rectangular: el rojo pertenece a la rama
             # descendente. Marca el final de la recuperación fuerte de carga,
             # cuando termina la rodilla y comienza el tramo alto casi plano.

@@ -46,7 +46,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-20-v77-fin-rodilla-derecha-compresion-gas-8c31"
+    "2026-08-20-v78-pie-lateral-inferior-izquierdo-gas-b5a2"
 )
 
 VENTANA_DIAGNOSTICO_ROBUSTO = 6
