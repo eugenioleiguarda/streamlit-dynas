@@ -47,7 +47,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-24-v86-golpe-bomba-referencia-y-laterales-4f29"
+    "2026-08-24-v87-codos-consolidados-en-grafico-73d1"
 )
 
 VENTANA_DIAGNOSTICO_ROBUSTO = 6
@@ -487,6 +487,25 @@ def figura_carta(
     mostrar_carta_patrones=True,
     mostrar_sam_v2=False,
 ):
+    # El diagnóstico consolidado es la fuente canónica de las horizontales y
+    # sus codos. Algunas correcciones físicas se aplican durante la
+    # consolidación; por eso no se debe volver a dibujar un punto anterior
+    # conservado en resultados_cartas. La salida técnica queda únicamente
+    # como respaldo para campos ausentes.
+    if resultado is None:
+        resultado_grafico = diagnostico
+    else:
+        resultado_grafico = resultado.copy()
+        columnas_sam_diagnostico = [
+            columna for columna in diagnostico.index
+            if "SAM_" in columna or "SAM_Modificado" in columna
+        ]
+        for columna in columnas_sam_diagnostico:
+            valor = diagnostico.get(columna)
+            if np.isscalar(valor) and not pd.isna(valor):
+                resultado_grafico[columna] = valor
+    resultado = resultado_grafico
+
     x = a_array(carta["Fondo_Posiciones"])
     y = a_array(carta["Fondo_Cargas"])
     principal = diagnostico.get("Diagnostico_Principal", "Pozo bien explotado")
