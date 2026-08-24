@@ -47,7 +47,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-24-v87-codos-consolidados-en-grafico-73d1"
+    "2026-08-24-v89-validacion-suave-llenado-completo-2ca7"
 )
 
 VENTANA_DIAGNOSTICO_ROBUSTO = 6

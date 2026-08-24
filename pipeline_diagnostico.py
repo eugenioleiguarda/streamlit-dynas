@@ -8586,33 +8586,152 @@ def procesar_json(
                 )
 
             def candidato_azul_derecho_bomba(x, y):
-                """Respaldo legado, limitado a la mitad inferior."""
-                inicio = int(np.argmax(
-                    x + 0.03 * (y - y_min_bomba)
-                    / rango_y_bomba * rango_x_bomba
-                ))
-                recorrido = np.arange(inicio, len(x))
-                if len(recorrido) < 5:
-                    recorrido = np.arange(inicio, -1, -1)
-                desplazamiento = (
-                    x_max_bomba - x[recorrido]
-                ) / rango_x_bomba
-                for k in range(1, len(recorrido) - 2):
-                    futuras = desplazamiento[k:k + 3]
-                    if (
-                        futuras[0] >= 0.012
-                        and np.count_nonzero(
-                            np.diff(futuras) >= -0.004
-                        ) >= 1
-                        and futuras[-1] >= 0.025
-                    ):
-                        indice = int(recorrido[max(0, k - 1)])
-                        return float(x[indice]), float(y[indice])
-                return None
+                """Selecciona un codo inferior sólo en el lateral derecho.
 
-            azul_der_bomba = candidato_azul_derecho_bomba(
-                x_desc_bomba, y_desc_bomba
-            )
+                La geometría manda: se exigen posición derecha, transferencia
+                pseudo vertical sostenida y separación de ambas horizontales.
+                Entre candidatos geométricamente válidos, la consistencia de
+                sumergencia actúa únicamente como penalización suave. Así se
+                evita rescatar el rulo izquierdo o mover un punto a una zona
+                físicamente atractiva pero geométricamente incorrecta.
+                """
+                x = np.asarray(x, dtype=float)
+                y = np.asarray(y, dtype=float)
+                if len(x) < 5:
+                    return None
+
+                superior_prueba = pd.to_numeric(
+                    resultado.get("Carga_Superior_SAM_Seleccionada_lbf"),
+                    errors="coerce",
+                )
+                profundidad_prueba = pd.to_numeric(
+                    resultado.get("Profundidad_Bomba_m"), errors="coerce"
+                )
+                area_prueba = pd.to_numeric(
+                    resultado.get("Area_Piston_SAM_pulg2"), errors="coerce"
+                )
+                gradiente_prueba = pd.to_numeric(
+                    resultado.get("Gradiente_SAM_psi_m"), errors="coerce"
+                )
+                descarga_prueba = pd.to_numeric(
+                    resultado.get("Presion_Descarga_Bomba_SAM_psi"),
+                    errors="coerce",
+                )
+                casing_prueba = pd.to_numeric(
+                    resultado.get("Presion_Casing_SAM_kg_cm2"),
+                    errors="coerce",
+                )
+                llenado_prueba = pd.to_numeric(
+                    llenado_operativo,
+                    errors="coerce",
+                )
+
+                candidatos = []
+                for indice in range(1, len(x) - 1):
+                    posicion_rel = (
+                        x[indice] - x_min_bomba
+                    ) / rango_x_bomba
+                    carga_rel = (
+                        y[indice] - y_min_bomba
+                    ) / rango_y_bomba
+
+                    # Nunca se permite que el "azul derecho" provenga del
+                    # rulo izquierdo ni de las pseudo horizontales.
+                    if not (0.52 <= posicion_rel and 0.10 <= carga_rel <= 0.58):
+                        continue
+
+                    dx_rel = abs(x[indice + 1] - x[indice - 1]) / rango_x_bomba
+                    dy_rel = abs(y[indice + 1] - y[indice - 1]) / rango_y_bomba
+                    verticalidad = dx_rel / max(dy_rel, 1e-9)
+                    if verticalidad > 0.55:
+                        continue
+
+                    # La rama debe seguir avanzando desde la derecha hacia la
+                    # horizontal inferior; una inversión amplia suele ser una
+                    # ondulación o un falso codo.
+                    if x[indice + 1] > x[indice] + 0.012 * rango_x_bomba:
+                        continue
+
+                    penalizacion_fisica = 0.0
+                    sumergencia_rel_candidata = np.nan
+                    if np.isfinite([
+                        superior_prueba,
+                        profundidad_prueba,
+                        area_prueba,
+                        gradiente_prueba,
+                        descarga_prueba,
+                        casing_prueba,
+                    ]).all() and area_prueba > 0 and gradiente_prueba > 0:
+                        peso_prueba = superior_prueba - y[indice]
+                        pip_prueba = descarga_prueba - peso_prueba / area_prueba
+                        sumergencia_prueba = (
+                            pip_prueba - casing_prueba * KG_CM2_A_PSI
+                        ) / gradiente_prueba
+                        sumergencia_rel_candidata = (
+                            100.0 * sumergencia_prueba / profundidad_prueba
+                        )
+                        if np.isfinite(sumergencia_rel_candidata):
+                            if golpe_fluido or compresion_gas:
+                                if sumergencia_rel_candidata < 0.0:
+                                    penalizacion_fisica = min(
+                                        2.0,
+                                        0.5 + abs(sumergencia_rel_candidata) / 15.0,
+                                    )
+                                elif sumergencia_rel_candidata > 15.0:
+                                    penalizacion_fisica = min(
+                                        1.5,
+                                        (sumergencia_rel_candidata - 15.0) / 30.0,
+                                    )
+                            elif (
+                                np.isfinite(llenado_prueba)
+                                and llenado_prueba >= 95.0
+                            ):
+                                # Con llenado prácticamente completo, una
+                                # sumergencia negativa es poco consistente y
+                                # el rango 10–15% funciona como referencia
+                                # suave. Nunca habilita un candidato que haya
+                                # fallado los filtros geométricos anteriores.
+                                if sumergencia_rel_candidata < 0.0:
+                                    penalizacion_fisica = min(
+                                        2.0,
+                                        0.65
+                                        + abs(sumergencia_rel_candidata) / 15.0,
+                                    )
+                                elif sumergencia_rel_candidata < 10.0:
+                                    penalizacion_fisica = (
+                                        10.0 - sumergencia_rel_candidata
+                                    ) / 10.0
+                                elif sumergencia_rel_candidata < 15.0:
+                                    penalizacion_fisica = 0.20 * (
+                                        15.0 - sumergencia_rel_candidata
+                                    ) / 5.0
+                            elif sumergencia_rel_candidata < 0.0:
+                                penalizacion_fisica = min(
+                                    2.0,
+                                    abs(sumergencia_rel_candidata) / 20.0,
+                                )
+
+                    score = verticalidad + 0.65 * penalizacion_fisica
+                    candidatos.append((
+                        score,
+                        verticalidad,
+                        indice,
+                        sumergencia_rel_candidata,
+                    ))
+
+                if not candidatos:
+                    return None
+                _, verticalidad, indice, sumergencia_rel_candidata = min(
+                    candidatos, key=lambda item: (item[0], item[1])
+                )
+                return {
+                    "posicion": float(x[indice]),
+                    "carga": float(y[indice]),
+                    "verticalidad": float(verticalidad),
+                    "sumergencia_relativa_pct": float(
+                        sumergencia_rel_candidata
+                    ) if np.isfinite(sumergencia_rel_candidata) else np.nan,
+                }
 
             def candidato_rojo_izquierdo_legado(x, y):
                 inicio = int(np.argmin(
@@ -8679,14 +8798,6 @@ def procesar_json(
             aplicar_rojo_izq_bomba = bool(
                 aplicar_rojo_izq_banda or aplicar_rojo_izq_legado
             )
-            aplicar_azul_der_bomba = bool(
-                azul_der_bomba is not None
-                and np.isfinite(azul_der_actual)
-                and azul_der_bomba[1]
-                > azul_der_actual + 0.10 * rango_y_bomba
-                and azul_der_bomba[1]
-                <= y_min_bomba + 0.50 * rango_y_bomba
-            )
             if aplicar_rojo_izq_bomba:
                 resultado["Posicion_Roja_Izquierda_SAM_Modificado_pulg"] = (
                     rojo_izq_bomba[0]
@@ -8720,13 +8831,28 @@ def procesar_json(
                     resultado["Carga_Superior_SAM_Seleccionada_lbf"] = 0.5 * (
                         rojo_izq_para_media + rojo_der_bomba[1]
                     )
+            # La validación física del azul usa la horizontal superior final,
+            # una vez aplicadas las eventuales correcciones de ambos rojos.
+            azul_der_bomba = candidato_azul_derecho_bomba(
+                x_desc_bomba, y_desc_bomba
+            )
+            aplicar_azul_der_bomba = bool(
+                azul_der_bomba is not None
+                and np.isfinite(azul_der_actual)
+            )
             if aplicar_azul_der_bomba:
                 resultado["Posicion_Azul_Derecha_SAM_Modificado_pulg"] = (
-                    azul_der_bomba[0]
+                    azul_der_bomba["posicion"]
                 )
                 resultado["Carga_Azul_Derecha_SAM_Modificado_lbf"] = (
-                    azul_der_bomba[1]
+                    azul_der_bomba["carga"]
                 )
+                resultado["Verticalidad_Azul_Derecho_SAM_Modificado"] = (
+                    azul_der_bomba["verticalidad"]
+                )
+                resultado[
+                    "Sumergencia_Relativa_Candidata_Azul_Derecho_pct"
+                ] = azul_der_bomba["sumergencia_relativa_pct"]
 
             for tabla_sam in (resultados_cartas, base_diagnosticos):
                 mascara_carta_sam = tabla_sam["CartaId"].astype(int) == carta_id
@@ -8817,6 +8943,7 @@ def procesar_json(
                         base_diagnosticos["CartaId"].astype(int) == carta_id,
                         campo,
                     ] = valor
+
                 mascara_carta_base = (
                     base_diagnosticos["CartaId"].astype(int) == carta_id
                 )
