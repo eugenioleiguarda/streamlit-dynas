@@ -8383,6 +8383,46 @@ def procesar_json(
         # --------------------------------------------------------
         # 4. GOLPE DE BOMBA
         # --------------------------------------------------------
+        x_asc_golpe = np.asarray(
+            resultado["Ascendente"]["posicion"], dtype=float
+        )
+        y_asc_golpe = np.asarray(
+            resultado["Ascendente"]["carga"], dtype=float
+        )
+        x_desc_golpe = np.asarray(
+            resultado["Descendente"]["posicion"], dtype=float
+        )
+        y_desc_golpe = np.asarray(
+            resultado["Descendente"]["carga"], dtype=float
+        )
+        x_min_golpe = float(min(np.min(x_asc_golpe), np.min(x_desc_golpe)))
+        x_max_golpe = float(max(np.max(x_asc_golpe), np.max(x_desc_golpe)))
+        rango_x_golpe = max(x_max_golpe - x_min_golpe, 1e-9)
+        mascara_central_inferior = (
+            (x_desc_golpe >= x_min_golpe + 0.18 * rango_x_golpe)
+            & (x_desc_golpe <= x_min_golpe + 0.72 * rango_x_golpe)
+        )
+        carga_inferior_geometrica = pd.to_numeric(
+            resultado.get("Carga_Desc_Geometrica"), errors="coerce"
+        )
+        carga_inferior_central = (
+            float(np.median(y_desc_golpe[mascara_central_inferior]))
+            if np.count_nonzero(mascara_central_inferior) >= 4
+            else np.nan
+        )
+        referencias_inferiores = [
+            valor for valor in (
+                carga_inferior_geometrica,
+                carga_inferior_central,
+            )
+            if np.isfinite(valor)
+        ]
+        carga_inferior_golpe_robusta = (
+            float(max(referencias_inferiores))
+            if referencias_inferiores
+            else float(np.nanmedian(y_desc_golpe))
+        )
+
         metricas_golpe = medir_golpe_bomba_izquierdo(
             # Se usan ambas ramas porque el punto de corte entre carreras puede
             # dejar los puntos del impacto en cualquiera de los dos arreglos.
@@ -8395,8 +8435,30 @@ def procesar_json(
                 resultado["Ascendente"]["carga"],
                 resultado["Descendente"]["carga"],
             ]),
-            carga_inferior=float(resultado["Carga_Desc_Geometrica"]),
+            carga_inferior=float(carga_inferior_geometrica),
         )
+        metricas_golpe_fronterizo = medir_golpe_bomba_izquierdo(
+            posicion=np.concatenate([x_asc_golpe, x_desc_golpe]),
+            carga=np.concatenate([y_asc_golpe, y_desc_golpe]),
+            carga_inferior=carga_inferior_golpe_robusta,
+            profundidad_min_pct=0.075,
+        )
+        golpe_bomba_fronterizo_estrecho = bool(
+            8.0 <= metricas_golpe_fronterizo[
+                "Profundidad_Golpe_Inferior_pct"
+            ] < 10.5
+            and metricas_golpe_fronterizo[
+                "Ancho_Golpe_Inferior_pct"
+            ] <= 4.0
+            and metricas_golpe_fronterizo[
+                "Posicion_Minimo_Golpe_pct"
+            ] <= 6.0
+            and metricas_golpe_fronterizo[
+                "Puntos_Golpe_Inferior"
+            ] <= 4
+        )
+        if golpe_bomba_fronterizo_estrecho:
+            metricas_golpe = metricas_golpe_fronterizo
 
         rulo_golpe_bomba = bool(
             detectar_rulo_golpe_bomba_izquierdo(
@@ -8409,6 +8471,7 @@ def procesar_json(
             horizontales_ok
             and (
                 metricas_golpe["Golpe_Localizado_Izquierda"]
+                or golpe_bomba_fronterizo_estrecho
                 or (rulo_golpe_bomba and compresion_gas)
                 or (
                     bloqueo_gas_probable
@@ -8465,43 +8528,118 @@ def procesar_json(
             y_max_bomba = float(max(np.max(y_asc_bomba), np.max(y_desc_bomba)))
             rango_y_bomba = max(y_max_bomba - y_min_bomba, 1e-9)
 
-            def salida_sostenida_lateral(x, y, lado):
-                x = np.asarray(x, dtype=float)
-                y = np.asarray(y, dtype=float)
-                if len(x) < 7:
-                    return None
-                # Orientar la traza desde el extremo lateral que transfiere
-                # carga hacia la pseudo horizontal correspondiente.
-                if lado == "izquierda":
-                    inicio = int(np.argmin(x + 0.03 * (y - y_min_bomba)
-                                          / rango_y_bomba * rango_x_bomba))
-                    recorrido = np.arange(inicio, len(x))
-                    if len(recorrido) < 5:
-                        recorrido = np.arange(inicio, -1, -1)
-                    desplazamiento = (x[recorrido] - x_min_bomba) / rango_x_bomba
-                else:
-                    inicio = int(np.argmax(x + 0.03 * (y - y_min_bomba)
-                                          / rango_y_bomba * rango_x_bomba))
-                    recorrido = np.arange(inicio, len(x))
-                    if len(recorrido) < 5:
-                        recorrido = np.arange(inicio, -1, -1)
-                    desplazamiento = (x_max_bomba - x[recorrido]) / rango_x_bomba
+            # El rojo izquierdo se obtiene en la banda superior de la
+            # transferencia izquierda. El objetivo de carga evita el rulo
+            # inferior del impacto y la penalización por interioridad lo
+            # mantiene sobre la vertical o pseudo vertical.
+            indices_rojo_izq_bomba = np.flatnonzero(
+                x_asc_bomba <= x_min_bomba + 0.16 * rango_x_bomba
+            )
+            rojo_izq_bomba = None
+            if (
+                len(indices_rojo_izq_bomba) >= 4
+                and np.ptp(y_asc_bomba[indices_rojo_izq_bomba])
+                >= 0.35 * rango_y_bomba
+            ):
+                objetivo_rojo_bomba = y_min_bomba + 0.75 * rango_y_bomba
+                score_rojo_bomba = (
+                    abs(
+                        y_asc_bomba[indices_rojo_izq_bomba]
+                        - objetivo_rojo_bomba
+                    ) / rango_y_bomba
+                    + 0.30 * (
+                        x_asc_bomba[indices_rojo_izq_bomba] - x_min_bomba
+                    ) / rango_x_bomba
+                )
+                indice_rojo_bomba = int(indices_rojo_izq_bomba[
+                    np.argmin(score_rojo_bomba)
+                ])
+                rojo_izq_bomba = (
+                    float(x_asc_bomba[indice_rojo_bomba]),
+                    float(y_asc_bomba[indice_rojo_bomba]),
+                )
+            indices_rojo_der_bomba = np.flatnonzero(
+                x_desc_bomba >= x_max_bomba - 0.16 * rango_x_bomba
+            )
+            rojo_der_bomba = None
+            if (
+                len(indices_rojo_der_bomba) >= 4
+                and np.ptp(y_desc_bomba[indices_rojo_der_bomba])
+                >= 0.35 * rango_y_bomba
+            ):
+                objetivo_rojo_bomba = y_min_bomba + 0.75 * rango_y_bomba
+                score_rojo_der_bomba = (
+                    abs(
+                        y_desc_bomba[indices_rojo_der_bomba]
+                        - objetivo_rojo_bomba
+                    ) / rango_y_bomba
+                    + 0.30 * (
+                        x_max_bomba - x_desc_bomba[indices_rojo_der_bomba]
+                    ) / rango_x_bomba
+                )
+                indice_rojo_der_bomba = int(indices_rojo_der_bomba[
+                    np.argmin(score_rojo_der_bomba)
+                ])
+                rojo_der_bomba = (
+                    float(x_desc_bomba[indice_rojo_der_bomba]),
+                    float(y_desc_bomba[indice_rojo_der_bomba]),
+                )
+
+            def candidato_azul_derecho_bomba(x, y):
+                """Respaldo legado, limitado a la mitad inferior."""
+                inicio = int(np.argmax(
+                    x + 0.03 * (y - y_min_bomba)
+                    / rango_y_bomba * rango_x_bomba
+                ))
+                recorrido = np.arange(inicio, len(x))
+                if len(recorrido) < 5:
+                    recorrido = np.arange(inicio, -1, -1)
+                desplazamiento = (
+                    x_max_bomba - x[recorrido]
+                ) / rango_x_bomba
                 for k in range(1, len(recorrido) - 2):
                     futuras = desplazamiento[k:k + 3]
                     if (
                         futuras[0] >= 0.012
-                        and np.count_nonzero(np.diff(futuras) >= -0.004) >= 1
+                        and np.count_nonzero(
+                            np.diff(futuras) >= -0.004
+                        ) >= 1
                         and futuras[-1] >= 0.025
                     ):
                         indice = int(recorrido[max(0, k - 1)])
                         return float(x[indice]), float(y[indice])
                 return None
 
-            rojo_izq_bomba = salida_sostenida_lateral(
-                x_asc_bomba, y_asc_bomba, "izquierda"
+            azul_der_bomba = candidato_azul_derecho_bomba(
+                x_desc_bomba, y_desc_bomba
             )
-            azul_der_bomba = salida_sostenida_lateral(
-                x_desc_bomba, y_desc_bomba, "derecha"
+
+            def candidato_rojo_izquierdo_legado(x, y):
+                inicio = int(np.argmin(
+                    x + 0.03 * (y - y_min_bomba)
+                    / rango_y_bomba * rango_x_bomba
+                ))
+                recorrido = np.arange(inicio, len(x))
+                if len(recorrido) < 5:
+                    recorrido = np.arange(inicio, -1, -1)
+                desplazamiento = (
+                    x[recorrido] - x_min_bomba
+                ) / rango_x_bomba
+                for k in range(1, len(recorrido) - 2):
+                    futuras = desplazamiento[k:k + 3]
+                    if (
+                        futuras[0] >= 0.012
+                        and np.count_nonzero(
+                            np.diff(futuras) >= -0.004
+                        ) >= 1
+                        and futuras[-1] >= 0.025
+                    ):
+                        indice = int(recorrido[max(0, k - 1)])
+                        return float(x[indice]), float(y[indice])
+                return None
+
+            rojo_izq_bomba_legado = candidato_rojo_izquierdo_legado(
+                x_asc_bomba, y_asc_bomba
             )
             rojo_izq_actual = pd.to_numeric(
                 resultado.get("Carga_Roja_Izquierda_SAM_Modificado_lbf"),
@@ -8519,21 +8657,35 @@ def procesar_json(
                 resultado.get("Carga_Roja_Derecha_SAM_Modificado_lbf"),
                 errors="coerce",
             )
-            # Cada lateral se valida de forma independiente. Antes se exigía
-            # que rojo izquierdo y azul derecho mejoraran simultáneamente;
-            # esa conjunción dejaba el azul sobre la horizontal aunque su
-            # transferencia derecha fuese inequívoca.
-            aplicar_rojo_izq_bomba = bool(
+            aplicar_rojo_izq_banda = bool(
                 rojo_izq_bomba is not None
                 and np.isfinite(rojo_izq_actual)
                 and rojo_izq_bomba[1]
-                < rojo_izq_actual - 0.012 * rango_y_bomba
+                > rojo_izq_actual + 0.06 * rango_y_bomba
+            )
+            if not aplicar_rojo_izq_banda:
+                aplicar_rojo_izq_legado = bool(
+                    rojo_izq_bomba_legado is not None
+                    and np.isfinite(rojo_izq_actual)
+                    and rojo_izq_bomba_legado[1]
+                    < rojo_izq_actual - 0.012 * rango_y_bomba
+                    and rojo_izq_bomba_legado[1]
+                    >= y_min_bomba + 0.55 * rango_y_bomba
+                )
+                if aplicar_rojo_izq_legado:
+                    rojo_izq_bomba = rojo_izq_bomba_legado
+            else:
+                aplicar_rojo_izq_legado = False
+            aplicar_rojo_izq_bomba = bool(
+                aplicar_rojo_izq_banda or aplicar_rojo_izq_legado
             )
             aplicar_azul_der_bomba = bool(
                 azul_der_bomba is not None
                 and np.isfinite(azul_der_actual)
                 and azul_der_bomba[1]
-                > azul_der_actual + 0.012 * rango_y_bomba
+                > azul_der_actual + 0.10 * rango_y_bomba
+                and azul_der_bomba[1]
+                <= y_min_bomba + 0.50 * rango_y_bomba
             )
             if aplicar_rojo_izq_bomba:
                 resultado["Posicion_Roja_Izquierda_SAM_Modificado_pulg"] = (
@@ -8545,6 +8697,28 @@ def procesar_json(
                 if np.isfinite(rojo_der_actual):
                     resultado["Carga_Superior_SAM_Seleccionada_lbf"] = 0.5 * (
                         rojo_izq_bomba[1] + rojo_der_actual
+                    )
+            aplicar_rojo_der_bomba = bool(
+                rojo_der_bomba is not None
+                and np.isfinite(rojo_der_actual)
+                and rojo_der_bomba[1]
+                > rojo_der_actual + 0.06 * rango_y_bomba
+            )
+            if aplicar_rojo_der_bomba:
+                resultado["Posicion_Roja_Derecha_SAM_Modificado_pulg"] = (
+                    rojo_der_bomba[0]
+                )
+                resultado["Carga_Roja_Derecha_SAM_Modificado_lbf"] = (
+                    rojo_der_bomba[1]
+                )
+                rojo_izq_para_media = pd.to_numeric(
+                    resultado.get(
+                        "Carga_Roja_Izquierda_SAM_Modificado_lbf"
+                    ), errors="coerce"
+                )
+                if np.isfinite(rojo_izq_para_media):
+                    resultado["Carga_Superior_SAM_Seleccionada_lbf"] = 0.5 * (
+                        rojo_izq_para_media + rojo_der_bomba[1]
                     )
             if aplicar_azul_der_bomba:
                 resultado["Posicion_Azul_Derecha_SAM_Modificado_pulg"] = (

@@ -47,7 +47,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-21-v85-render-resumen-y-accion-negativa-e3a6"
+    "2026-08-24-v86-golpe-bomba-referencia-y-laterales-4f29"
 )
 
 VENTANA_DIAGNOSTICO_ROBUSTO = 6
