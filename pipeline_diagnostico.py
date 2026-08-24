@@ -8954,6 +8954,235 @@ def procesar_json(
                     mascara_carta_base, "Sumergencia_Usada_m"
                 ] = sumergencia_sam
 
+        # Consistencia lateral para cartas regulares de llenado alto. En esta
+        # familia los cuatro codos deben quedar sobre las transferencias, no en
+        # las pseudo horizontales. La corrección sólo actúa sobre valores
+        # claramente fuera de banda y no se mezcla con golpe, compresión ni
+        # pérdida en viajera, que tienen geometrías propias.
+        sumergencia_regular_actual = pd.to_numeric(
+            resultado.get(
+                "Sumergencia_Relativa_SAM_Seleccionada_pct", np.nan
+            ),
+            errors="coerce",
+        )
+        carta_regular_llena = bool(
+            horizontales_ok
+            and not golpe_bomba
+            and not golpe_fluido
+            and not compresion_gas
+            and not perdida_valvula
+            and np.isfinite(llenado_operativo)
+            and llenado_operativo >= 85.0
+            and np.isfinite(sumergencia_regular_actual)
+            and sumergencia_regular_actual >= 10.0
+            and not transferencia_inferior_sostenida
+        )
+        if carta_regular_llena:
+            resultado = resultado.copy()
+            x_asc_regular = np.asarray(
+                resultado["Ascendente"]["posicion"], dtype=float
+            )
+            y_asc_regular = np.asarray(
+                resultado["Ascendente"]["carga"], dtype=float
+            )
+            x_desc_regular = np.asarray(
+                resultado["Descendente"]["posicion"], dtype=float
+            )
+            y_desc_regular = np.asarray(
+                resultado["Descendente"]["carga"], dtype=float
+            )
+            x_min_regular = float(min(
+                np.min(x_asc_regular), np.min(x_desc_regular)
+            ))
+            x_max_regular = float(max(
+                np.max(x_asc_regular), np.max(x_desc_regular)
+            ))
+            y_min_regular = float(min(
+                np.min(y_asc_regular), np.min(y_desc_regular)
+            ))
+            y_max_regular = float(max(
+                np.max(y_asc_regular), np.max(y_desc_regular)
+            ))
+            rango_x_regular = max(x_max_regular - x_min_regular, 1e-9)
+            rango_y_regular = max(y_max_regular - y_min_regular, 1e-9)
+
+            def candidato_lateral_regular(x, y, lado, objetivo_carga_rel):
+                candidatos = []
+                for indice in range(1, len(x) - 1):
+                    x_rel = (x[indice] - x_min_regular) / rango_x_regular
+                    y_rel = (y[indice] - y_min_regular) / rango_y_regular
+                    if lado == "izquierdo" and x_rel > 0.18:
+                        continue
+                    if lado == "derecho" and x_rel < 0.82:
+                        continue
+                    dx_rel = abs(x[indice + 1] - x[indice - 1]) / rango_x_regular
+                    dy_rel = abs(y[indice + 1] - y[indice - 1]) / rango_y_regular
+                    verticalidad = dx_rel / max(dy_rel, 1e-9)
+                    if verticalidad > 0.55:
+                        continue
+                    score = (
+                        abs(y_rel - objetivo_carga_rel)
+                        + 0.20 * verticalidad
+                    )
+                    candidatos.append((score, indice))
+                if not candidatos:
+                    return None
+                indice = min(candidatos, key=lambda item: item[0])[1]
+                return float(x[indice]), float(y[indice])
+
+            rojo_izq_actual = pd.to_numeric(
+                resultado.get("Carga_Roja_Izquierda_SAM_Modificado_lbf"),
+                errors="coerce",
+            )
+            rojo_der_actual = pd.to_numeric(
+                resultado.get("Carga_Roja_Derecha_SAM_Modificado_lbf"),
+                errors="coerce",
+            )
+            azul_der_actual = pd.to_numeric(
+                resultado.get("Carga_Azul_Derecha_SAM_Modificado_lbf"),
+                errors="coerce",
+            )
+            rojo_izq_rel = (
+                (rojo_izq_actual - y_min_regular) / rango_y_regular
+                if np.isfinite(rojo_izq_actual) else np.nan
+            )
+            rojo_der_rel = (
+                (rojo_der_actual - y_min_regular) / rango_y_regular
+                if np.isfinite(rojo_der_actual) else np.nan
+            )
+            azul_der_rel = (
+                (azul_der_actual - y_min_regular) / rango_y_regular
+                if np.isfinite(azul_der_actual) else np.nan
+            )
+            rojo_izq_nuevo = candidato_lateral_regular(
+                x_asc_regular, y_asc_regular, "izquierdo", 0.78
+            )
+            rojo_der_nuevo = candidato_lateral_regular(
+                x_asc_regular, y_asc_regular, "derecho", 0.78
+            )
+            azul_der_nuevo = candidato_lateral_regular(
+                x_desc_regular, y_desc_regular, "derecho", 0.35
+            )
+
+            correccion_regular = {}
+            if (
+                rojo_izq_nuevo is not None
+                and np.isfinite(rojo_izq_rel)
+                and (rojo_izq_rel < 0.65 or rojo_izq_rel > 0.86)
+            ):
+                correccion_regular.update({
+                    "Posicion_Roja_Izquierda_SAM_Modificado_pulg": rojo_izq_nuevo[0],
+                    "Carga_Roja_Izquierda_SAM_Modificado_lbf": rojo_izq_nuevo[1],
+                })
+            if (
+                rojo_der_nuevo is not None
+                and np.isfinite(rojo_der_rel)
+                and (rojo_der_rel < 0.65 or rojo_der_rel > 0.86)
+            ):
+                correccion_regular.update({
+                    "Posicion_Roja_Derecha_SAM_Modificado_pulg": rojo_der_nuevo[0],
+                    "Carga_Roja_Derecha_SAM_Modificado_lbf": rojo_der_nuevo[1],
+                })
+            if (
+                azul_der_nuevo is not None
+                and np.isfinite(azul_der_rel)
+                and azul_der_rel > 0.55
+            ):
+                correccion_regular.update({
+                    "Posicion_Azul_Derecha_SAM_Modificado_pulg": azul_der_nuevo[0],
+                    "Carga_Azul_Derecha_SAM_Modificado_lbf": azul_der_nuevo[1],
+                })
+
+            if correccion_regular:
+                valores_regulares_originales = {
+                    campo: resultado.get(campo)
+                    for campo in correccion_regular
+                }
+                for campo, valor in correccion_regular.items():
+                    resultado[campo] = valor
+                rojo_izq_final = pd.to_numeric(resultado.get(
+                    "Carga_Roja_Izquierda_SAM_Modificado_lbf"
+                ), errors="coerce")
+                rojo_der_final = pd.to_numeric(resultado.get(
+                    "Carga_Roja_Derecha_SAM_Modificado_lbf"
+                ), errors="coerce")
+                azul_izq_final = pd.to_numeric(resultado.get(
+                    "Carga_Azul_Izquierda_SAM_Modificado_lbf"
+                ), errors="coerce")
+                azul_der_final = pd.to_numeric(resultado.get(
+                    "Carga_Azul_Derecha_SAM_Modificado_lbf"
+                ), errors="coerce")
+                superior_final = 0.5 * (rojo_izq_final + rojo_der_final)
+                incluir_azul_izq = bool(resultado.get(
+                    "Azul_Izquierdo_Incluido_SAM_Modificado", True
+                ))
+                inferior_final = (
+                    0.5 * (azul_izq_final + azul_der_final)
+                    if incluir_azul_izq and np.isfinite(azul_izq_final)
+                    else azul_der_final
+                )
+                area_final = pd.to_numeric(
+                    resultado.get("Area_Piston_SAM_pulg2"), errors="coerce"
+                )
+                gradiente_final = pd.to_numeric(
+                    resultado.get("Gradiente_SAM_psi_m"), errors="coerce"
+                )
+                descarga_final = pd.to_numeric(
+                    resultado.get("Presion_Descarga_Bomba_SAM_psi"), errors="coerce"
+                )
+                casing_final = pd.to_numeric(
+                    resultado.get("Presion_Casing_SAM_kg_cm2"), errors="coerce"
+                )
+                profundidad_final = pd.to_numeric(
+                    resultado.get("Profundidad_Bomba_m"), errors="coerce"
+                )
+                peso_final = superior_final - inferior_final
+                if (
+                    np.isfinite([
+                        superior_final, inferior_final, area_final,
+                        gradiente_final, descarga_final, casing_final,
+                        profundidad_final,
+                    ]).all()
+                    and peso_final > 0 and area_final > 0
+                    and gradiente_final > 0 and profundidad_final > 0
+                ):
+                    pip_final = descarga_final - peso_final / area_final
+                    sumergencia_final = (
+                        pip_final - casing_final * KG_CM2_A_PSI
+                    ) / gradiente_final
+                    sumergencia_relativa_final = (
+                        100.0 * sumergencia_final / profundidad_final
+                    )
+                    correccion_regular.update({
+                        "Carga_Superior_SAM_Seleccionada_lbf": superior_final,
+                        "Carga_Inferior_SAM_Seleccionada_lbf": inferior_final,
+                        "Peso_Fluido_SAM_Seleccionado_lbf": peso_final,
+                        "Diferencial_Carga_SAM_psi": peso_final / area_final,
+                        "PIP_SAM_Seleccionado_psi": pip_final,
+                        "Sumergencia_SAM_Seleccionada_m": sumergencia_final,
+                        "Sumergencia_Relativa_SAM_Seleccionada_pct": (
+                            sumergencia_relativa_final
+                        ),
+                        "Nivel_Dinamico_SAM_Modificado_m": (
+                            profundidad_final - sumergencia_final
+                        ),
+                    })
+                    if sumergencia_relativa_final >= 10.0:
+                        for campo, valor in correccion_regular.items():
+                            resultado[campo] = valor
+                            for tabla_sam in (
+                                resultados_cartas, base_diagnosticos
+                            ):
+                                if campo not in tabla_sam.columns:
+                                    tabla_sam[campo] = np.nan
+                                tabla_sam.loc[
+                                    tabla_sam["CartaId"].astype(int) == carta_id,
+                                    campo,
+                                ] = valor
+                    else:
+                        for campo, valor in valores_regulares_originales.items():
+                            resultado[campo] = valor
+
         # Fine tuning exclusivo para pérdida en viajera ya confirmada. Se
         # ejecuta después de evaluar golpe de bomba para que una corrección
         # visual no cambie la clasificación morfológica de la carta.
