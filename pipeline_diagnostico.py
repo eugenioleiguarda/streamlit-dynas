@@ -14,6 +14,11 @@ import numpy as np
 import pandas as pd
 
 
+PIPELINE_IMPLEMENTATION_VERSION = (
+    "2026-08-25-v92-reconciliacion-morfologia-e-invariantes-54ac"
+)
+
+
 
 # Hipotesis explicitas para el calculo paralelo de sumergencia.
 # Por ahora no intervienen en ninguna regla diagnostica.

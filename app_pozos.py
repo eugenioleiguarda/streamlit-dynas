@@ -47,7 +47,15 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-25-v91-reconciliacion-morfologia-e-invariantes-54ac"
+    "2026-08-25-v92-verificacion-pipeline-interno-7e31"
+)
+PIPELINE_IMPLEMENTATION_VERSION_ESPERADA = (
+    "2026-08-25-v92-reconciliacion-morfologia-e-invariantes-54ac"
+)
+PIPELINE_IMPLEMENTATION_VERSION_CARGADA = getattr(
+    pipeline_diagnostico_modulo,
+    "PIPELINE_IMPLEMENTATION_VERSION",
+    "sin-identificador (pipeline anterior)",
 )
 
 VENTANA_DIAGNOSTICO_ROBUSTO = 6
@@ -1276,8 +1284,22 @@ st.caption(
 )
 
 st.sidebar.caption(
-    f"Versión del algoritmo: {PIPELINE_CACHE_VERSION}"
+    f"Versión de la interfaz: {PIPELINE_CACHE_VERSION}"
 )
+st.sidebar.caption(
+    "Versión interna del cálculo: "
+    f"{PIPELINE_IMPLEMENTATION_VERSION_CARGADA}"
+)
+if (
+    PIPELINE_IMPLEMENTATION_VERSION_CARGADA
+    != PIPELINE_IMPLEMENTATION_VERSION_ESPERADA
+):
+    st.error(
+        "El despliegue mezcló versiones: app_pozos.py es nuevo, pero "
+        "pipeline_diagnostico.py no corresponde a esta versión. Subí ambos "
+        "archivos juntos y reiniciá la app antes de reprocesar el JSON."
+    )
+    st.stop()
 reprocesamiento_solicitado = st.sidebar.button(
     "Reprocesar todos los archivos",
     use_container_width=True,
