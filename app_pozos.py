@@ -47,7 +47,7 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-24-v90-consistencia-laterales-cartas-regulares-81fd"
+    "2026-08-25-v91-reconciliacion-morfologia-e-invariantes-54ac"
 )
 
 VENTANA_DIAGNOSTICO_ROBUSTO = 6

@@ -8965,17 +8965,77 @@ def procesar_json(
             ),
             errors="coerce",
         )
+        metodo_sam_actual = str(
+            resultado.get("Metodo_SAM_Seleccionado", "")
+        ).upper()
+        cargas_previas_laterales = pd.to_numeric(pd.Series([
+            resultado.get("Carga_Roja_Izquierda_SAM_Modificado_lbf"),
+            resultado.get("Carga_Roja_Derecha_SAM_Modificado_lbf"),
+            resultado.get("Carga_Azul_Izquierda_SAM_Modificado_lbf"),
+            resultado.get("Carga_Azul_Derecha_SAM_Modificado_lbf"),
+        ]), errors="coerce").to_numpy(dtype=float)
+        cargas_carta_previas = np.concatenate([
+            np.asarray(resultado["Ascendente"]["carga"], dtype=float),
+            np.asarray(resultado["Descendente"]["carga"], dtype=float),
+        ])
+        y_min_previo_regular = float(np.min(cargas_carta_previas))
+        rango_y_previo_regular = max(float(np.ptp(cargas_carta_previas)), 1e-9)
+        posiciones_carta_previas = np.concatenate([
+            np.asarray(resultado["Ascendente"]["posicion"], dtype=float),
+            np.asarray(resultado["Descendente"]["posicion"], dtype=float),
+        ])
+        rango_x_previo_regular = max(
+            float(np.ptp(posiciones_carta_previas)), 1e-9
+        )
+        carta_angosta_y_alta = bool(
+            45.0 <= rango_x_previo_regular <= 65.0
+            and rango_y_previo_regular / rango_x_previo_regular >= 180.0
+        )
+        rojos_previos = cargas_previas_laterales[:2]
+        azules_previos = cargas_previas_laterales[2:]
+        invariantes_laterales_rotas = bool(
+            np.isfinite(cargas_previas_laterales).all()
+            and (
+                abs(rojos_previos[0] - azules_previos[0])
+                < 0.12 * rango_y_previo_regular
+                or abs(rojos_previos[1] - azules_previos[1])
+                < 0.12 * rango_y_previo_regular
+                or np.max(azules_previos) >= np.min(rojos_previos)
+                or np.max(
+                    (azules_previos - y_min_previo_regular)
+                    / rango_y_previo_regular
+                ) > 0.55
+                or (
+                    np.isfinite(sumergencia_regular_actual)
+                    and sumergencia_regular_actual < 0.0
+                )
+            )
+        )
+        morfologia_especial_no_confirmada = bool(
+            (
+                "MORFOLOGIA_VALVULA_VIAJERA" in metodo_sam_actual
+                or "MORFOLOGIA_COMPRESION_GAS" in metodo_sam_actual
+            )
+            and invariantes_laterales_rotas
+            and carta_angosta_y_alta
+        )
         carta_regular_llena = bool(
             horizontales_ok
-            and not golpe_bomba
-            and not golpe_fluido
-            and not compresion_gas
-            and not perdida_valvula
             and np.isfinite(llenado_operativo)
             and llenado_operativo >= 85.0
-            and np.isfinite(sumergencia_regular_actual)
-            and sumergencia_regular_actual >= 10.0
-            and not transferencia_inferior_sostenida
+            and (
+                morfologia_especial_no_confirmada
+                or (
+                    not golpe_bomba
+                    and not golpe_fluido
+                    and not compresion_gas
+                    and not perdida_valvula
+                    and
+                    np.isfinite(sumergencia_regular_actual)
+                    and sumergencia_regular_actual >= 10.0
+                    and not transferencia_inferior_sostenida
+                )
+            )
         )
         if carta_regular_llena:
             resultado = resultado.copy()
@@ -9042,6 +9102,10 @@ def procesar_json(
                 resultado.get("Carga_Azul_Derecha_SAM_Modificado_lbf"),
                 errors="coerce",
             )
+            azul_izq_actual = pd.to_numeric(
+                resultado.get("Carga_Azul_Izquierda_SAM_Modificado_lbf"),
+                errors="coerce",
+            )
             rojo_izq_rel = (
                 (rojo_izq_actual - y_min_regular) / rango_y_regular
                 if np.isfinite(rojo_izq_actual) else np.nan
@@ -9054,11 +9118,29 @@ def procesar_json(
                 (azul_der_actual - y_min_regular) / rango_y_regular
                 if np.isfinite(azul_der_actual) else np.nan
             )
+            azul_izq_rel = (
+                (azul_izq_actual - y_min_regular) / rango_y_regular
+                if np.isfinite(azul_izq_actual) else np.nan
+            )
             rojo_izq_nuevo = candidato_lateral_regular(
                 x_asc_regular, y_asc_regular, "izquierdo", 0.78
             )
             rojo_der_nuevo = candidato_lateral_regular(
-                x_asc_regular, y_asc_regular, "derecho", 0.78
+                (
+                    x_desc_regular
+                    if morfologia_especial_no_confirmada
+                    else x_asc_regular
+                ),
+                (
+                    y_desc_regular
+                    if morfologia_especial_no_confirmada
+                    else y_asc_regular
+                ),
+                "derecho",
+                0.78,
+            )
+            azul_izq_nuevo = candidato_lateral_regular(
+                x_desc_regular, y_desc_regular, "izquierdo", 0.32
             )
             azul_der_nuevo = candidato_lateral_regular(
                 x_desc_regular, y_desc_regular, "derecho", 0.35
@@ -9077,16 +9159,36 @@ def procesar_json(
             if (
                 rojo_der_nuevo is not None
                 and np.isfinite(rojo_der_rel)
-                and (rojo_der_rel < 0.65 or rojo_der_rel > 0.86)
+                and (
+                    morfologia_especial_no_confirmada
+                    or rojo_der_rel < 0.65
+                    or rojo_der_rel > 0.86
+                )
             ):
                 correccion_regular.update({
                     "Posicion_Roja_Derecha_SAM_Modificado_pulg": rojo_der_nuevo[0],
                     "Carga_Roja_Derecha_SAM_Modificado_lbf": rojo_der_nuevo[1],
                 })
             if (
+                azul_izq_nuevo is not None
+                and np.isfinite(azul_izq_rel)
+                and morfologia_especial_no_confirmada
+                and (azul_izq_rel < 0.18 or azul_izq_rel > 0.55)
+            ):
+                correccion_regular.update({
+                    "Posicion_Azul_Izquierda_SAM_Modificado_pulg": azul_izq_nuevo[0],
+                    "Carga_Azul_Izquierda_SAM_Modificado_lbf": azul_izq_nuevo[1],
+                })
+            if (
                 azul_der_nuevo is not None
                 and np.isfinite(azul_der_rel)
-                and azul_der_rel > 0.55
+                and (
+                    azul_der_rel > 0.55
+                    or (
+                        morfologia_especial_no_confirmada
+                        and azul_der_rel < 0.18
+                    )
+                )
             ):
                 correccion_regular.update({
                     "Posicion_Azul_Derecha_SAM_Modificado_pulg": azul_der_nuevo[0],
@@ -9167,7 +9269,16 @@ def procesar_json(
                             profundidad_final - sumergencia_final
                         ),
                     })
-                    if sumergencia_relativa_final >= 10.0:
+                    correccion_fisicamente_admisible = bool(
+                        morfologia_especial_no_confirmada
+                        or sumergencia_relativa_final >= 10.0
+                        or (
+                            np.isfinite(sumergencia_regular_actual)
+                            and sumergencia_relativa_final
+                            > sumergencia_regular_actual
+                        )
+                    )
+                    if correccion_fisicamente_admisible:
                         for campo, valor in correccion_regular.items():
                             resultado[campo] = valor
                             for tabla_sam in (
