@@ -47,10 +47,10 @@ st.set_page_config(
 )
 
 PIPELINE_CACHE_VERSION = (
-    "2026-08-25-v92-verificacion-pipeline-interno-7e31"
+    "2026-09-01-v93-codos-laterales-y-llenado-operativo-61bd"
 )
 PIPELINE_IMPLEMENTATION_VERSION_ESPERADA = (
-    "2026-08-25-v92-reconciliacion-morfologia-e-invariantes-54ac"
+    "2026-09-01-v93-codos-laterales-y-admision-suave-9f2c"
 )
 PIPELINE_IMPLEMENTATION_VERSION_CARGADA = getattr(
     pipeline_diagnostico_modulo,
@@ -2008,8 +2008,8 @@ with tab_explorador:
                     alertas = " · ".join(diag["Diagnosticos_Todos"])
                     st.caption(f"Diagnóstico: {alertas}")
                     st.caption(
-                        "Llenado "
-                        f"{valor_texto(diag.get('Llenado_Diagnostico_pct'), '.1f', '%')} · "
+                        "Llenado operativo "
+                        f"{valor_texto(diag.get('Llenado_Operativo_pct', diag.get('Llenado_Diagnostico_pct')), '.1f', '%')} · "
                         "Sumergencia propia "
                         f"{valor_texto(diag.get('Sumergencia_SAM_Seleccionada_m'), '.1f', ' m')} "
                         "("
@@ -2505,6 +2505,8 @@ no tenga más peso que otro. Todavía no se aplican umbrales diagnósticos.
                         f"Fecha: {pd.to_datetime(diag['Fecha']).strftime('%d/%m/%Y %H:%M')}  \n"
                         f"Carrera de fondo efectiva: "
                         f"{valor_texto(diag.get('Carrera_Efectiva_Fondo_Calculada_pulg'), '.1f', ' pulg')}  \n"
+                        f"Llenado operativo: "
+                        f"{valor_texto(diag.get('Llenado_Operativo_pct', diag.get('Llenado_Diagnostico_pct')), '.1f', '%')}  \n"
                         f"Peso de fluido: "
                         f"{valor_texto(diag.get('Peso_Fluido_SAM_Seleccionado_lbf'), '.0f', ' lbf')}  \n"
                         f"Sumergencia: "

@@ -15,7 +15,7 @@ import pandas as pd
 
 
 PIPELINE_IMPLEMENTATION_VERSION = (
-    "2026-08-25-v92-reconciliacion-morfologia-e-invariantes-54ac"
+    "2026-09-01-v93-codos-laterales-y-admision-suave-9f2c"
 )
 
 
@@ -1118,9 +1118,72 @@ def calcular_sam_modificado(
             ):
                 x_roja_der, roja_derecha = rojo_derecho_oblicua
 
-            salida["Metodo_SAM_Seleccionado"] = (
-                "SAM_MODIFICADO_MORFOLOGIA_VALVULA_VIAJERA"
+            # Respaldo para falsas morfologías de viajera en cartas con los
+            # cuatro codos tomados demasiado arriba. Se exige que las dos
+            # fronteras inferiores de la descendente estén materialmente por
+            # debajo de los azules actuales; sólo entonces se reemplaza el
+            # conjunto completo por las transiciones laterales geométricas.
+            rojo_valvula_der = frontera_geometrica_rama(
+                x_asc, y_asc, "derecha"
             )
+            azul_valvula_izq = frontera_geometrica_rama(
+                x_desc, y_desc, "izquierda"
+            )
+            azul_valvula_der = frontera_geometrica_rama(
+                x_desc, y_desc, "derecha"
+            )
+            indices_rojo_valvula_izq = np.flatnonzero(
+                (x_asc == x_roja_izq) & (y_asc == roja_izquierda)
+            )
+            rojo_valvula_izq = None
+            if len(indices_rojo_valvula_izq):
+                # La primera muestra es el pie de la ascendente y la segunda
+                # ya está inequívocamente dentro de la vertical izquierda.
+                # Se evita el punto siguiente, que en rodillas cortas puede
+                # pertenecer ya a la pseudo-horizontal superior.
+                indice_rojo_valvula_izq = min(1, len(x_asc) - 1)
+                rojo_valvula_izq = (
+                    float(x_asc[indice_rojo_valvula_izq]),
+                    float(y_asc[indice_rojo_valvula_izq]),
+                )
+            if all(punto is not None for punto in (
+                rojo_valvula_izq,
+                rojo_valvula_der,
+                azul_valvula_izq,
+                azul_valvula_der,
+            )):
+                azules_demasiado_altos = bool(
+                    azul_izquierda
+                    > azul_valvula_izq[1] + 0.18 * rango_y
+                    and azul_derecha
+                    > azul_valvula_der[1] + 0.18 * rango_y
+                    and azul_izquierda >= y_min_global + 0.85 * rango_y
+                    and azul_derecha >= y_min_global + 0.60 * rango_y
+                )
+                orden_vertical_valido = bool(
+                    rojo_valvula_izq[1]
+                    > azul_valvula_izq[1] + 0.35 * rango_y
+                    and rojo_valvula_der[1]
+                    > azul_valvula_der[1] + 0.35 * rango_y
+                    and azul_valvula_der[1]
+                    <= azul_valvula_izq[1] - 0.08 * rango_y
+                )
+                if azules_demasiado_altos and orden_vertical_valido:
+                    x_roja_izq, roja_izquierda = rojo_valvula_izq
+                    x_roja_der, roja_derecha = rojo_valvula_der[:2]
+                    x_azul_izq, azul_izquierda = azul_valvula_izq[:2]
+                    x_azul_der, azul_derecha = azul_valvula_der[:2]
+                    salida["Metodo_SAM_Seleccionado"] = (
+                        "SAM_MODIFICADO_TRANSICIONES_LATERALES_VALVULA"
+                    )
+
+            if (
+                salida.get("Metodo_SAM_Seleccionado")
+                != "SAM_MODIFICADO_TRANSICIONES_LATERALES_VALVULA"
+            ):
+                salida["Metodo_SAM_Seleccionado"] = (
+                    "SAM_MODIFICADO_MORFOLOGIA_VALVULA_VIAJERA"
+                )
         else:
             # Salvaguarda local para el error observado en cartas llenas: una
             # reconciliación de niveles no puede alejar un azul hacia arriba
@@ -1341,6 +1404,45 @@ def calcular_sam_modificado(
             ):
                 x_azul_izq, azul_izquierda = azul_gas_izq[:2]
 
+            # En algunas cartas de gas la rama ascendente comienza ya a media
+            # altura del lateral izquierdo. Ese primer punto no representa el
+            # codo azul: el pie real permanece en la descendente, apenas
+            # iniciada la transferencia vertical. Se usa solamente cuando el
+            # candidato mejora materialmente la coherencia con el azul derecho.
+            azul_izquierdo_antes_ajuste_gas = (
+                x_azul_izq, azul_izquierda
+            )
+            ajuste_pie_izquierdo_gas = False
+            indices_pie_izquierdo = np.flatnonzero(
+                (x_desc <= x_min_global + 0.025 * rango_x)
+                & (y_desc <= y_min_global + 0.48 * rango_y)
+            )
+            if len(indices_pie_izquierdo):
+                indice_pie_izquierdo = int(indices_pie_izquierdo[
+                    np.argmin(y_desc[indices_pie_izquierdo])
+                ])
+                azul_pie_izquierdo = (
+                    float(x_desc[indice_pie_izquierdo]),
+                    float(y_desc[indice_pie_izquierdo]),
+                )
+                diferencia_actual_azules = abs(
+                    azul_izquierda - azul_derecha
+                )
+                diferencia_propuesta_azules = abs(
+                    azul_pie_izquierdo[1] - azul_derecha
+                )
+                if (
+                    azul_izquierda
+                    > azul_pie_izquierdo[1] + 0.12 * rango_y
+                    and azul_izquierda >= y_min_global + 0.55 * rango_y
+                    and azul_derecha <= y_min_global + 0.30 * rango_y
+                    and diferencia_propuesta_azules
+                    < diferencia_actual_azules - 0.08 * rango_y
+                    and diferencia_propuesta_azules <= 0.22 * rango_y
+                ):
+                    x_azul_izq, azul_izquierda = azul_pie_izquierdo
+                    ajuste_pie_izquierdo_gas = True
+
             # En fondos ondulados, un valle interior puede parecer un codo
             # inferior. El azul izquierdo debe haber alcanzado realmente el
             # lateral: poca variación de posición mientras se transfiere una
@@ -1434,6 +1536,54 @@ def calcular_sam_modificado(
             ):
                 x_roja_der, roja_derecha = rojo_gas_der
 
+            # Cuando la rodilla superior derecha pertenece a la ascendente,
+            # el detector general entrega el primer punto dentro de la caída.
+            # Para el SAM se avanza hasta tres muestras desde ese inicio: las
+            # primeras todavía pueden pertenecer a la rodilla, mientras que
+            # la tercera ya se encuentra en la pseudovertical de transferencia.
+            rojo_transferencia_asc = detectar_recta_superior_derecha(
+                x_asc, y_asc
+            )
+            ajuste_rojo_derecho_gas = False
+            if (
+                ajuste_pie_izquierdo_gas
+                and rojo_transferencia_asc is not None
+            ):
+                indices_transferencia_asc = np.flatnonzero(
+                    (x_asc == rojo_transferencia_asc[0])
+                    & (y_asc == rojo_transferencia_asc[1])
+                )
+                if len(indices_transferencia_asc):
+                    indice_transferencia_asc = min(
+                        int(indices_transferencia_asc[0]) + 3,
+                        len(x_asc) - 1,
+                    )
+                    rojo_vertical_asc = (
+                        float(x_asc[indice_transferencia_asc]),
+                        float(y_asc[indice_transferencia_asc]),
+                    )
+                    if (
+                        rojo_vertical_asc[1]
+                        > azul_derecha + 0.35 * rango_y
+                        and roja_derecha
+                        > rojo_vertical_asc[1] + 0.015 * rango_y
+                    ):
+                        x_roja_der, roja_derecha = rojo_vertical_asc
+                        ajuste_rojo_derecho_gas = True
+
+            # Las dos desviaciones forman una misma firma geométrica. Si el
+            # rojo derecho no estaba todavía sobre la rodilla, no se modifica
+            # aisladamente el azul izquierdo: eso sería una recalibración más
+            # amplia de cartas cuya horizontal superior ya era coherente.
+            if (
+                ajuste_pie_izquierdo_gas
+                and not ajuste_rojo_derecho_gas
+            ):
+                x_azul_izq, azul_izquierda = (
+                    azul_izquierdo_antes_ajuste_gas
+                )
+                ajuste_pie_izquierdo_gas = False
+
             azul_gas_der = frontera_recuperacion_inferior(x_desc, y_desc)
             if (
                 azul_gas_der is not None
@@ -1460,6 +1610,8 @@ def calcular_sam_modificado(
                 x_desc >= x_max_global - 0.08 * rango_x
             ]
             rectangular_ruidosa = bool(
+                not ajuste_pie_izquierdo_gas
+                and
                 np.count_nonzero(mascara_central_asc) >= 5
                 and np.count_nonzero(mascara_central_desc) >= 5
                 and len(lateral_derecho_desc) >= 5
@@ -6534,6 +6686,7 @@ def procesar_json(
     # Golpe de fluido o compresión de gas.
     UMBRAL_VACIO_SUP_DER_FLUIDO = 20.0
     UMBRAL_VACIO_INF_DER_FLUIDO = 30.0
+    UMBRAL_VACIO_SUP_DER_ADMISION_SUAVE = 3.0
     UMBRAL_LLENADO_INCOMPLETO = 90.0
     UMBRAL_PENDIENTE_GOLPE_FLUIDO = 4.0
     UMBRAL_CURVATURA_GOLPE_FLUIDO = 18.0
@@ -8183,7 +8336,7 @@ def procesar_json(
             and np.isfinite(vacio_sd)
             and np.isfinite(vacio_id)
             and np.isfinite(llenado)
-            and vacio_sd >= 4.0
+            and vacio_sd >= UMBRAL_VACIO_SUP_DER_ADMISION_SUAVE
             and vacio_id >= 10.0
             and llenado < 92.0
         )
@@ -8270,7 +8423,7 @@ def procesar_json(
             and np.isfinite(vacio_sd)
             and np.isfinite(vacio_id)
             and np.isfinite(llenado)
-            and vacio_sd >= 4.0
+            and vacio_sd >= UMBRAL_VACIO_SUP_DER_ADMISION_SUAVE
             and vacio_id >= 20.0
             and llenado < 92.0
         )
@@ -8292,7 +8445,7 @@ def procesar_json(
             and inicio_transferencia_derecha >= 97.0
             and ancho_transferencia_20_80 >= 8.0
             and pendiente_transferencia < 4.0
-            and vacio_sd >= 4.0
+            and vacio_sd >= UMBRAL_VACIO_SUP_DER_ADMISION_SUAVE
             and vacio_id >= 25.0
             and llenado < 92.0
         )
@@ -9497,7 +9650,7 @@ def procesar_json(
             and np.isfinite(vacio_sd)
             and np.isfinite(vacio_id)
             and 85.0 <= llenado <= 92.0
-            and vacio_sd >= 4.0
+            and vacio_sd >= UMBRAL_VACIO_SUP_DER_ADMISION_SUAVE
             and vacio_id >= 15.0
         )
 
